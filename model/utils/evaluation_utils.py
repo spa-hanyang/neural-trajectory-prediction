@@ -10,42 +10,38 @@ def evaluate(error, metric):
   """Pick a metric and evaluate depending on task."""
   error_x = error[:, :, 0]
   error_y = error[:, :, 1]
+  len_pred = error_x.shape[1]
+  target_sampling_period = 20 // len_pred
 
   # MAE_X scores
   if metric.lower() == "maex_5":
-    evaluation_score = _mae(error_x[:, 4])
+    evaluation_score = _mae(error_x[:, int(5//target_sampling_period - 1)])
   elif metric.lower() == "maex_10":
-    evaluation_score = _mae(error_x[:, 9])
+    evaluation_score = _mae(error_x[:, int(10//target_sampling_period - 1)])
   elif metric.lower() == "maex_15":
-    evaluation_score = _mae(error_x[:, 14])
+    evaluation_score = _mae(error_x[:, int(15//target_sampling_period - 1)])
   elif metric.lower() == "maex_20":
-    evaluation_score = _mae(error_x[:, 19])
-  elif metric.lower() == "maex_oneshot":
-    evaluation_score = _mae(error_x[:, 0])
+    evaluation_score = _mae(error_x[:, int(20//target_sampling_period - 1)])
   
   # MAE_Y scores
   elif metric.lower() == "maey_5":
-    evaluation_score = _mae(error_y[:, 4])
+    evaluation_score = _mae(error_y[:, int(5//target_sampling_period - 1)])
   elif metric.lower() == "maey_10":
-    evaluation_score = _mae(error_y[:, 9])
+    evaluation_score = _mae(error_y[:, int(10//target_sampling_period - 1)])
   elif metric.lower() == "maey_15":
-    evaluation_score = _mae(error_y[:, 14])
+    evaluation_score = _mae(error_y[:, int(15//target_sampling_period - 1)])
   elif metric.lower() == "maey_20":
-    evaluation_score = _mae(error_y[:, 19])
-  elif metric.lower() == "maey_oneshot":
-    evaluation_score = _mae(error_y[:, 0])
+    evaluation_score = _mae(error_y[:, int(20//target_sampling_period - 1)])
 
   # RMSE scores
   elif metric.lower() == "rmse_5":
-    evaluation_score = _rmse(error[:, 4, :])
+    evaluation_score = _rmse(error[:, int(5//target_sampling_period - 1), :])
   elif metric.lower() == "rmse_10":
-    evaluation_score = _rmse(error[:, 9, :])
+    evaluation_score = _rmse(error[:, int(10//target_sampling_period - 1), :])
   elif metric.lower() == "rmse_15":
-    evaluation_score = _rmse(error[:, 14, :])
+    evaluation_score = _rmse(error[:, int(15//target_sampling_period - 1), :])
   elif metric.lower() == "rmse_20":
-    evaluation_score = _rmse(error[:, 19, :])
-  elif metric.lower() == "rmse_oneshot":
-    evaluation_score = _rmse(error[:, 0, :])
+    evaluation_score = _rmse(error[:, int(20//target_sampling_period - 1), :])
 
   else:
     raise ValueError("Unknown metric %s" % metric)

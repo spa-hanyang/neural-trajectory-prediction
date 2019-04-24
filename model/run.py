@@ -1,4 +1,4 @@
-2from __future__ import absolute_import
+from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
@@ -163,6 +163,7 @@ def add_arguments(parser):
                       help="cudnn_lstm | lstm (not implemented) | cudnn_gru (not implemented) | gru (not implemented)")
   parser.add_argument("--output_projector_units", type="list", default=[2],
                       help="List of the output projector unit sizes in order.")
+  parser.add_argument("--skip_connection_in_time", action='store_true', help="Skip connection in time.")
   
   #### 6.2. fc decoder
   parser.add_argument("--fc_decoder_units", type="list", default=[64, 2],
@@ -315,6 +316,7 @@ def create_hparams(flags):
     _add_argument(hparams, "rnn_decoder_layers", flags.rnn_decoder_layers)
     _add_argument(hparams, "rnn_decoder_units", flags.rnn_decoder_units)
     _add_argument(hparams, "rnn_decoder_type", flags.rnn_decoder_type)
+    _add_argument(hparams, "skip_connection_in_time", flags.skip_connection_in_time)
     _add_argument(hparams, "output_projector_units", flags.output_projector_units)
   elif hparams.decoder_type == "fc":
     _add_argument(hparams, "fc_decoder_units", flags.fc_decoder_units)

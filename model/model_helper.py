@@ -187,7 +187,6 @@ def compute_loss_and_predict(model, sess, dataflow, label):
   avg_loss = total_loss / total_batch
   prediction = np.concatenate(prediction, axis=0)
   gt = np.concatenate(gt, axis=0)
-  pdb.set_trace()
   return prediction, gt, avg_loss
 
 def gradient_clip(gradients, max_gradient_norm):

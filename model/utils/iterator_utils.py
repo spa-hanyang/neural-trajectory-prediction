@@ -67,7 +67,6 @@ def map_func(dataset, hparams):
   src_ref = source[reference_idx, :3].copy()  # deep copy source at ref idx (to be used in lidar processing).
   
   if hparams.relative:
-    test = source.shape
     src = source[:, [0,1,3,4]]
     
   else:
