@@ -1,0 +1,19 @@
+# Ignore entire direcotry
+model.bak.tensorpack/
+model.bak.tfdata/
+previous_logs/
+scripts/
+visualizer/
+
+# Ignore auto-generated files by Python
+__pycache__
+._*.py
+__init__.py
+
+# Ignore only the contents of directory
+ramdisk/*
+!ramdisk/.gitkeep
+dataset/*
+!dataset/.gitkeep
+log/*
+!log/.gitkeep
