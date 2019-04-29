@@ -1,4 +1,4 @@
-# NeurlTrajectoryPrediction
+# NeurlaTrajectoryPrediction
 
 ## Train Example
 
