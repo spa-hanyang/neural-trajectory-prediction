@@ -36,6 +36,7 @@ class load_datasets(object):
     load_path = [os.path.join(self.TR_PATH, dataset) for dataset in os.listdir(self.TR_PATH)]
     load_path.sort()
     
+    # seqID, objID, x, y, z, dx, dy, dz, ort, cls
     datasets = []
     for num in range(len(load_path)):
       dataset = np.loadtxt(load_path[num], dtype=np.float64)
@@ -51,6 +52,7 @@ class load_datasets(object):
     load_path = [os.path.join(self.INS_PATH, dataset) for dataset in os.listdir(self.INS_PATH)]
     load_path.sort()
     
+    # latitude, longitude, altitude, roll, pitch, yaw, _ 
     datasets = []
     for num in range(len(load_path)):
       dataset = np.loadtxt(load_path[num], dtype=np.float64)

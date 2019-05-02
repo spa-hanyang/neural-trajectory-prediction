@@ -57,7 +57,7 @@ def TR(tx, ty, tz, rx, ry, rz, scale_factor=1.0, degrees=False):
   return np.block([[R, T], [0, 0, 0, 1]])
 
 def _rotation_mat(rx, ry, rz, degrees=False):
-  if degrees:
+  if degrees :
     [rx, ry, rz] = np.radians([rx, ry, rz])
 
   c, s = np.cos(rx), np.sin(rx)                                                                                                            

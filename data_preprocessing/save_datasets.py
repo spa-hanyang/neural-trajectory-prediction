@@ -19,10 +19,10 @@ class save_datasets(object):
   def __init__(self, save_path, version, filename):
 
     # self.PATH = os.path.abspath('./')  
-    self.SAVE = save_path
+    self.PATH = save_path
     self.VER = version
     self.FILE = filename
-    self.SAVE_VER = os.path.join(self.SAVE, self.VER)
+    self.SAVE_VER = os.path.join(self.PATH, self.VER)
 
 
   def save_as_pkl(self, dataset):
