@@ -81,59 +81,85 @@ def detect_emptynum(datasets):
   emptynum = {}
   for obj_ID in list(datasets.keys()):
     
-    if len(datasets[obj_ID]) - 1 < datasets[obj_ID][-1, 10] - datasets[obj_ID][0, 10]:
-      First_check = True
-      checknum = 0
-      for i in range(len(datasets[obj_ID]) - 1):
+    First_check = True
+    checknum = 0
+    for i in range(len(datasets[obj_ID]) - 1):
+      
+      interval = int(datasets[obj_ID][i+1,10] - datasets[obj_ID][i,10])
+      
+      if interval == 1:
+        continue
+      
+      elif interval == 2:
+        if First_check:
+          emptynum[obj_ID] = []
+          emptynum[obj_ID].append(datasets[obj_ID][i,10] + 1)
+          # print("{:d} object sequence has empty number {:.1f}.".format\
+          #       (obj_ID, datasets[obj_ID][i,10] + 1)) 
+        else:           
+          new_obj_ID = obj_ID + checknum 
+          emptynum[new_obj_ID] = []
+          emptynum[new_obj_ID].append(datasets[obj_ID][i,10] + 1)
+          # print("{:.2f} object sequence has empty number {:.1f}.".format\
+          #       (new_obj_ID, datasets[obj_ID][i,10] + 1)) 
+        First_check = False
+        checknum += 0.01
+      
+      elif interval > 2:         
+        if First_check:
+          emptynum[obj_ID] = []                    
+          for j in range(interval - 1):              
+            emptynum[obj_ID].append(datasets[obj_ID][i,10] + 1 + j)         
+          # print("{:d} object sequence has empty number {:.1f} to {:.1f}.".format\
+          #      (obj_ID, datasets[obj_ID][i,10] + 1, datasets[obj_ID][i+1,10] - 1))   
         
-        interval = int(datasets[obj_ID][i+1,10] - datasets[obj_ID][i,10])
-        
-        if interval == 0 and not i == 0:
-          # velocity of before sequence
-          velocity_1 = np.sqrt(np.sum(np.square(datasets[obj_ID][i,[2,3]] 
-                                - datasets[obj_ID][i - 1,[2,3]])))
-          velocity_2 = np.sqrt(np.sum(np.square(datasets[obj_ID][i + 1,[2,3]] 
-                                - datasets[obj_ID][i - 1,[2,3]])))
-          if velocity_1 > velocity_2:
-            np.delete(datasets[obj_ID], i, axis=0)
-          else:
-            np.delete(datasets[obj_ID], i + 1, axis=0)
-        elif interval == 1:
-          continue
-        elif interval == 2:
-          if First_check:
-            emptynum[obj_ID] = []
-            emptynum[obj_ID].append(datasets[obj_ID][i,10] + 1)
-            # print("{:d} object sequence has empty number {:.1f}.".format\
-            #       (obj_ID, datasets[obj_ID][i,10] + 1)) 
-          else:           
-            new_obj_ID = obj_ID + checknum 
-            emptynum[new_obj_ID] = []
-            emptynum[new_obj_ID].append(datasets[obj_ID][i,10] + 1)
-            # print("{:.2f} object sequence has empty number {:.1f}.".format\
-            #       (new_obj_ID, datasets[obj_ID][i,10] + 1)) 
-          First_check = False
-          checknum += 0.01
-        
-        else:         
-          if First_check:
-            emptynum[obj_ID] = []                    
-            for j in range(interval - 1):              
-              emptynum[obj_ID].append(datasets[obj_ID][i,10] + 1 + j)         
-            # print("{:d} object sequence has empty number {:.1f} to {:.1f}.".format\
-            #      (obj_ID, datasets[obj_ID][i,10] + 1, datasets[obj_ID][i+1,10] - 1))   
-          
-          else: 
-            new_obj_ID = obj_ID + checknum           
-            emptynum[new_obj_ID] = []            
-            for j in range(interval - 1):             
-              emptynum[new_obj_ID].append(datasets[obj_ID][i,10] + 1 + j) 
-            # print("{:.2f} object sequence has empty number {:.1f} to {:.1f}.".format\
-            #        (new_obj_ID, datasets[obj_ID][i,10] + 1, datasets[obj_ID][i+1,10] - 1))                                     
-          First_check = False
-          checknum += 0.01
+        else: 
+          new_obj_ID = obj_ID + checknum           
+          emptynum[new_obj_ID] = []            
+          for j in range(interval - 1):             
+            emptynum[new_obj_ID].append(datasets[obj_ID][i,10] + 1 + j) 
+          # print("{:.2f} object sequence has empty number {:.1f} to {:.1f}.".format\
+          #        (new_obj_ID, datasets[obj_ID][i,10] + 1, datasets[obj_ID][i+1,10] - 1))                                     
+        First_check = False
+        checknum += 0.01
 
   return emptynum
+
+
+def delete_samenum(datasets):
+  
+  for obj_ID in list(datasets.keys()):
+    i = 0
+    while i < len(datasets[obj_ID]) - 1 :
+      
+      interval = int(datasets[obj_ID][i+1,10] - datasets[obj_ID][i,10])
+      
+      if interval == 0 and i == 0 :
+        velocity_1 = np.sqrt(np.sum(np.square(datasets[obj_ID][i,[2,3]] 
+                              - datasets[obj_ID][i + 2,[2,3]])))
+        velocity_2 = np.sqrt(np.sum(np.square(datasets[obj_ID][i + 1,[2,3]] 
+                              - datasets[obj_ID][i + 2,[2,3]])))
+        
+        if velocity_1 > velocity_2:
+          datasets[obj_ID] = np.delete(datasets[obj_ID], i, axis=0)
+          i -= 1
+        else:
+          datasets[obj_ID] = np.delete(datasets[obj_ID], i + 1, axis=0)
+     
+      elif interval == 0 and not i == 0:
+        # velocity of before sequence
+        velocity_1 = np.sqrt(np.sum(np.square(datasets[obj_ID][i,[2,3]] 
+                              - datasets[obj_ID][i - 1,[2,3]])))
+        velocity_2 = np.sqrt(np.sum(np.square(datasets[obj_ID][i + 1,[2,3]] 
+                              - datasets[obj_ID][i - 1,[2,3]])))
+        if velocity_1 > velocity_2:
+          datasets[obj_ID] = np.delete(datasets[obj_ID], i, axis=0)
+          i -= 1
+        else:
+          datasets[obj_ID] = np.delete(datasets[obj_ID], i + 1, axis=0)
+        
+      i += 1
+  return datasets
 
 
 def TRtoTM(tr_datasets, INS_datasets, version):
@@ -180,6 +206,53 @@ def TRtoTM(tr_datasets, INS_datasets, version):
     tf_dataset[obj_ID][:,(2,3,4)] = XYZ_tm[obj_ID]
   
   return tf_dataset
+
+
+def TMtoTR(tr_datasets, INS_datasets, version):
+  """x,y,z of tracklet datas transform to hdl datas."""
+  # select x,y,z in tracklet datas
+  XYZ = {}
+  for obj_ID in list(tr_datasets.keys()):
+    XYZ[obj_ID] = tr_datasets[obj_ID][:, [2, 3, 4]]
+    XYZ[obj_ID] = XYZ[obj_ID]
+    XYZ[obj_ID] = np.c_[XYZ[obj_ID], np.ones(len(XYZ[obj_ID]))] # for rigid transform (X,Y,Z) -> (X,Y,Z,1)
+  
+  # transform matrix of hdl_to_vf in version
+  hdl_to_vf_mats = {'v1': TR(193.42, 0, -175, 0.0286, 180.50, -1.34, scale_factor=0.01, degrees=True),
+                    'v2': TR(203, -2.5, -150, 179.4, 0.15, -91.3, scale_factor=0.01, degrees=True)}
+
+  if version == 'v1':
+    hdl_to_vf = hdl_to_vf_mats['v1']
+  elif version == 'v2':
+    hdl_to_vf = hdl_to_vf_mats['v2']
+  
+  # transform matrix of vf_to_tm
+  vf_to_tm = []  
+  for seq in range(len(INS_datasets)):
+    lat, lon, alt, roll, pitch, yaw = INS_datasets[seq][:6]
+    N, E = WGS84toTM(lat, lon)
+    vf_to_tm.append(TR(N, E, -alt, roll, pitch, yaw)) # altitude has to be negative
+  
+  XYZ_tm = {}
+  for obj_ID in list(tr_datasets.keys()):
+    
+    temp_XYZ_tm = [] 
+    for offset in range(len(XYZ[obj_ID])):
+      # matrix multiply of vf_to_tm and hdl_to_vf
+      XYZ_vf = np.linalg.solve(vf_to_tm[int(tr_datasets[obj_ID][offset,10])], XYZ[obj_ID][offset])
+      XYZ_hdl = np.linalg.solve(hdl_to_vf, XYZ_vf).dot(100) # convert to centimeter
+      # multiply of matrix_hdl_to_tm and vector_(XYZ,1)
+      temp_XYZ_tm.append(XYZ_hdl)
+
+    XYZ_tm[obj_ID] = np.vstack(temp_XYZ_tm)
+    XYZ_tm[obj_ID] = XYZ_tm[obj_ID][:,:3]
+  
+  # data restruction
+  tf_dataset = copy.deepcopy(tr_datasets)  
+  for obj_ID in list(tf_dataset.keys()):
+    tf_dataset[obj_ID][:,(2,3,4)] = XYZ_tm[obj_ID]
+  
+  return tf_dataset
   
 
 def fill_emptynum(datasets, emptynum):
@@ -212,24 +285,19 @@ def fill_emptynum(datasets, emptynum):
       if len(datasets_split[0]) < 50:
         datasets[int(obj_ID)] = datasets_split[1]
 
-      elif int(obj_ID) == obj_ID:
-        obj_ID = int(obj_ID) + checknum
-        datasets[obj_ID] = datasets_split[0]
-        datasets[int(obj_ID)] = datasets_split[1]
-        checknum += 0.01 
       else:
-        obj_ID = int(obj_ID) + checknum
-        datasets[obj_ID] = datasets_split[0]
+        new_obj_ID = int(obj_ID) + checknum
+        datasets[new_obj_ID] = datasets_split[0]
         datasets[int(obj_ID)] = datasets_split[1]
         checknum += 0.01 
 
     else:
-      # velocity of before sequence
+      # velocity of before sequence(m/s)
       velocity_1 = np.sqrt(np.sum(np.square(datasets[int(obj_ID)][index_num,[2,3]] 
-                            - datasets[int(obj_ID)][index_num - 1,[2,3]])))
-      # velocity of later sequence
+                            - datasets[int(obj_ID)][index_num - 1,[2,3]]))) * 10
+      # velocity of later sequence(m/s)
       velocity_2 = np.sqrt(np.sum(np.square(datasets[int(obj_ID)][index_num + 2,[2,3]] 
-                            - datasets[int(obj_ID)][index_num + 1,[2,3]])))
+                            - datasets[int(obj_ID)][index_num + 1,[2,3]]))) * 10
       
       # if length of empty space is longer than 20, split array
       if len(emptynum[obj_ID]) > 20:
@@ -238,29 +306,30 @@ def fill_emptynum(datasets, emptynum):
         if len(datasets_split[0]) < 50:
           datasets[int(obj_ID)] = datasets_split[1]
         
-        elif int(obj_ID) == obj_ID:
-          obj_ID = int(obj_ID) + checknum
-          datasets[obj_ID] = datasets_split[0]
-          datasets[int(obj_ID)] = datasets_split[1]
-          checknum += 0.01 
         else:
-          obj_ID = int(obj_ID) + checknum
-          datasets[obj_ID] = datasets_split[0]
+          new_obj_ID = int(obj_ID) + checknum
+          datasets[new_obj_ID] = datasets_split[0]
           datasets[int(obj_ID)] = datasets_split[1]
           checknum += 0.01
 
       # if substraction of velocities is smaller than 1m/s, fill empty space using a linear equation
-      elif abs(velocity_2 - velocity_1) < 0.1:
-        stuff_arr_x = np.linspace(datasets[int(obj_ID)][index_num, 2], datasets[int(obj_ID)][index_num + 1, 2], endpoint=False)
+      elif abs(velocity_2 - velocity_1) < 1:
+        stuff_arr_x = np.linspace(datasets[int(obj_ID)][index_num, 2], datasets[int(obj_ID)][index_num + 1, 2], 
+                                  num=len(emptynum[obj_ID]) + 1, endpoint=False)       
         stuff_arr_x = stuff_arr_x[1:]
         
-        stuff_arr_y = np.linspace(datasets[int(obj_ID)][index_num, 2], datasets[int(obj_ID)][index_num + 1, 2], endpoint=False)
+        stuff_arr_y = np.linspace(datasets[int(obj_ID)][index_num, 3], datasets[int(obj_ID)][index_num + 1, 3], 
+                                  num=len(emptynum[obj_ID]) + 1,endpoint=False)        
         stuff_arr_y = stuff_arr_y[1:]
+        
+        stuff_arr_O = np.linspace(datasets[int(obj_ID)][index_num, 8], datasets[int(obj_ID)][index_num + 1, 8], 
+                                  num=len(emptynum[obj_ID]) + 1,endpoint=False)      
+        stuff_arr_O = stuff_arr_O[1:]
         
         stuff_arr = []
         for offset in range(len(emptynum[obj_ID])):
           offset_arr = datasets[int(obj_ID)][index_num]
-          np.put(offset_arr, [2, 3, 10], [stuff_arr_x[offset], stuff_arr_y[offset], emptynum[obj_ID][offset]] )
+          np.put(offset_arr, [2, 3, 8, 10], [stuff_arr_x[offset], stuff_arr_y[offset], stuff_arr_O[offset], emptynum[obj_ID][offset]] )
           stuff_arr.append(offset_arr)
         
         for offset in range(len(emptynum[obj_ID])):
@@ -273,14 +342,9 @@ def fill_emptynum(datasets, emptynum):
         if len(datasets_split[0]) < 50:
           datasets[int(obj_ID)] = datasets_split[1]
 
-        elif int(obj_ID) == obj_ID:
-          obj_ID = int(obj_ID) + checknum
-          datasets[obj_ID] = datasets_split[0]
-          datasets[int(obj_ID)] = datasets_split[1]
-          checknum += 0.01 
         else:
-          obj_ID = int(obj_ID) + checknum
-          datasets[obj_ID] = datasets_split[0]
+          new_obj_ID = int(obj_ID) + checknum
+          datasets[new_obj_ID] = datasets_split[0]
           datasets[int(obj_ID)] = datasets_split[1]
           checknum += 0.01
   
@@ -319,38 +383,38 @@ def data_rotation(tr_datasets, INS_datasets, degrees):
   return transform_tr, vf_to_tm
 
 
-def data_rotation(tr_datasets, INS_datasets, degrees):
+def check_data(datasets):
+  #sequence check
+  for obj_ID in list(datasets.keys()):    
+    for offset in range(len(datasets[obj_ID]) - 1):
+      assert int(datasets[obj_ID][offset + 1, 10] - datasets[obj_ID][offset , 10]) == 1\
+        ,"{}object's {}sequence is not continual".format(obj_ID, int(datasets[obj_ID][offset , 10]))
   
-  R_matrix = _rotation_mat(0, 0, degrees, degrees=degrees) 
- 
-  transform_tr = copy.deepcopy(tr_datasets)  
-  for obj_ID in list(tr_datasets.keys()):
-    for seq in range(len(tr_datasets[obj_ID])):  
-      XYZ = tr_datasets[obj_ID][seq,[2, 3, 4]]
-      XYZ = XYZ.dot(R_matrix)
+  #wrong trajectory check
+  for obj_ID in list(datasets.keys()):    
+    for offset in range(len(datasets[obj_ID]) - 2):
+      # velocity of before sequence(m/s)
+      velocity_1 = np.sqrt(np.sum(np.square(datasets[obj_ID][offset + 1,[2,3]] 
+                            - datasets[obj_ID][offset,[2,3]])))
+      # velocity of later sequence(m/s)
+      velocity_2 = np.sqrt(np.sum(np.square(datasets[obj_ID][offset + 2,[2,3]] 
+                            - datasets[obj_ID][offset + 1,[2,3]])))
       
-      O = tr_datasets[obj_ID][seq, 8] - degrees
-      XYZO = np.append(XYZ,O)
+      # assert abs(velocity_2 - velocity_1) * 10 < 6\
+      #   ,"{}object's trajectory data at {}sequence is wrong".format(obj_ID, int(datasets[obj_ID][offset , 10]))  
+      if abs(velocity_2 - velocity_1) * 10 > 100:
+        print("{}object's trajectory data at {}sequence is wrong".format(obj_ID, int(datasets[obj_ID][offset , 10])))
       
-      np.put(transform_tr[obj_ID][seq], [2, 3, 4, 8], XYZO)
 
-  vf_to_tm = {}
-  for seq in range(len(INS_datasets)):
-    
-    lat, lon, alt, roll, pitch, yaw = INS_datasets[seq][:6]
-    N, E = WGS84toTM(lat, lon)
-    seq_arr = np.array([N, E, alt])
-    N, E, alt = seq_arr.dot(R_matrix)    
-    vf_to_tm[seq] = TR(N, E, -alt, roll, pitch, yaw)
 
-  return transform_tr, vf_to_tm
+
 
 path = os.path.abspath('./')
 raw_data_path = os.path.join(path, 'dataset', 'raw_data')
 version = ['v1', 'v2']
 
-make_dir(path, 'dataset_agument')
-dir_path = os.path.join(path, 'dataset_agument')
+make_dir(path, 'dataset_augment')
+dir_path = os.path.join(path, 'dataset_augment')
 
 #################################################
 # use for make pickle data
@@ -372,10 +436,12 @@ for ver in version:
     fd = classify_tracklets(dataset)
     xyz = TRtoTM(fd, datas, ver)
     fd = len_filter(xyz)
-
+    
+    fd = delete_samenum(fd)
     emp = detect_emptynum(fd)
     ffd = fill_emptynum(fd, emp)
     ffd = len_filter(ffd, fp=True) 
+    check_data(ffd)
 
     save = save_datasets(data_path, ver, file)
     save.save_as_pkl(ffd)
@@ -401,12 +467,11 @@ for ver in version:
 #     xyz = TRtoTM(fd, datas, ver)
 #     fd = len_filter(xyz)
 
+#     fd = delete_samenum(fd)
 #     emp = detect_emptynum(fd)
 #     ffd = fill_emptynum(fd, emp)
 #     ffd = len_filter(ffd, fp=True) 
 
-#     save = save_datasets(data_path, ver, file)
-#     save.save_as_mat(ffd)
 
 
 # #######################################################
@@ -438,21 +503,21 @@ for ver in version:
 #     xyz = TRtoTM(fd, datas, ver)
 #     fd = len_filter(xyz)
 
+#     fd = delete_samenum(fd)
 #     emp = detect_emptynum(fd)
 #     ffd = fill_emptynum(fd, emp)
 #     ffd = len_filter(ffd, fp=True) 
+#     check_data(ffd) 
     
 #     ffd, vf_to_tm = data_rotation(ffd, datas, degree)
 
 #     save = save_datasets(data_path_1, ver, file)
 #     save.save_as_pkl(ffd)
-#     saves = save_datasets(data_path_2, ver, file + "_vf_to_tm")
+#     saves = save_datasets(data_path_2, ver, file + "6_vf_to_tm")
 #     saves.save_as_pkl(vf_to_tm)
 
 
-
-# # for model test
-# loads = load_datasets('v1', '2017Y05M30D16H01m12s')
+# loads = load_datasets('v1', '2017Y05M02D14H30m58s')
 # dataset = loads.load_tracklets()
 # datas = loads.load_INS()
 
@@ -460,10 +525,14 @@ for ver in version:
 # xyz = TRtoTM(fd, datas, 'v1')
 # fd_1 = len_filter(xyz)
 
-# emp = detect_emptynum(fd_1)
-# ffd = fill_emptynum(fd, emp)
-# ffd = len_filter(ffd, fp=True) 
+# fd_2 = delete_samenum(fd_1)
+# emp= detect_emptynum(fd_2)
 
-# ffd, vf_to_tm = data_rotation(ffd, datas, 90)
+# ffd_1 = fill_emptynum(fd_2, emp)
+# ffd = len_filter(ffd_1, fp=True) 
+# # check_data(ffd)
+# ffd_t = TMtoTR(ffd, datas, 'v1')
+
+# # ffd, vf_to_tm = data_rotation(ffd, datas, 90)
 
 # pdb.set_trace()

@@ -5,6 +5,7 @@ from __future__ import print_function
 import os
 
 import numpy as np
+import pdb
 
 path = os.path.abspath('./')
 raw_data_path = os.path.join(path, 'dataset', 'raw_data')
@@ -55,7 +56,7 @@ class load_datasets(object):
     for num in range(len(load_path)):
       dataset = np.loadtxt(load_path[num], dtype=np.float64)
       datasets.append(dataset)
-
+   
     return datasets
 
   
