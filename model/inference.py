@@ -7,6 +7,10 @@ import tensorflow as tf
 import numpy as np
 import pickle as pkl
 import pdb
+import time
+
+from functools import reduce
+import operator
 
 from . import model as basicmodel
 from . import pointnet_model
@@ -14,8 +18,7 @@ from . import model_helper
 from .utils import misc_utils as utils
 from .utils import evaluation_utils
 from .utils import transform_utils
-
-
+from .utils import iterator_utils
 
 __all__ = ["load_data", "inference"]
 
@@ -24,76 +27,7 @@ def load_data(inference_input_file, hparams=None):
   with open(inference_input_file, 'rb') as reader:
     inference_data = pkl.load(reader)
 
-  #if hparams.inference_indices is not None:
-  #  inference_indices = hparams.inference_indices
-  #  inference_data = inference_data[inference_indices]
-
-  data_path = os.path.abspath(hparams.data_path)
-
   return inference_data
-
-  # for sample in inference_data: #np.random.choice(inference_data, 128, replace=False):
-  #   version = sample['dataset_version']
-  #   code = sample['sample_code']
-  #   frame_idx = sample['reference_time']
-  #   seq_id = sample['sequence_id']
-    
-  #   source.append(sample['source'][:, :3])
-  #   source_orientation.append([sample['source'][:, 3]])
-  #   target.append(sample['target'][:, :3])
-  #   sample_info.append('v{}.{}.{}_id{}'.format(version,
-  #                                         code,
-  #                                         frame_idx,
-  #                                         seq_id))
-
-  #   if hparams.lidar:
-  #     if hparams.lidar_type == "preprocessed":
-  #       ptc_path.append(os.path.join(data_path, 'processed', 'bev',
-  #                       'v{}'.format(version), code,
-  #                       '{:010d}.tfrecord'.format(frame_idx)))
-  #     else:
-  #       ptc_path.append(os.path.join(data_path, 'raw_data', 'v{}'.format(version), code,
-  #                                  'Lidar', 'HDL32', 'data',
-  #                                  '{:010d}.bin'.format(frame_idx)))
-  #       ins_path = os.path.join(data_path, 'raw_data', 'v{}'.format(version), code,
-  #                               'INS', 'data', '{:010d}.txt'.format(frame_idx))
-  #       ins = np.loadtxt(ins_path)
-  #       roll = ins[3]
-  #       pitch = ins[4]
-  #       vf_to_hf = TR(0, 0, 0, roll, pitch, 0)
-  #       transform.append(vf_to_hf.dot(hdl_to_vf_list[version]))
-
-  # src = np.array(source, dtype=np.float32)
-  # src_orientation = np.array(source_orientation, dtype=np.float32)
-  # tgt = np.array(target, dtype=np.float32)
-  # ptc_path = np.array(ptc_path, dtype=np.string_)
-  # transform = np.array(transform, dtype=np.float32)
-  # reference_idx = hparams.input_length - 1
-  
-  # if hparams.lidar and hparams.bev_center == "target":
-  #   transform[:, :3, 3] -= src[:, reference_idx, :]
-
-  # input_dims = hparams.input_dims
-  # target_dims = hparams.target_dims
-
-  # if hparams.single_target:
-  #   tgt = np.take(tgt[:, :, :target_dims], [-1], axis=1)
-  # else:
-  #   target_sampling_period = hparams.target_sampling_period
-  #   tgt = tgt[:, target_sampling_period-1::target_sampling_period, :target_dims]
-  
-  # src = src[:, :, :input_dims]
-  
-
-  # if hparams.zero_centered_trajectory:
-  #   tgt -= np.take(src[:, :, :target_dims], [reference_idx], axis=1)
-  #   src -= np.take(src, [reference_idx], axis=1)
-    
-  # if hparams.orientation:
-  #   src = np.concatenate((src, src_orientation), axis=-1)
-  
-  # sample_info = np.array(sample_info, dtype=np.string_)
-  # return (src, tgt, ptc_path, transform, sample_info)
 
 def get_model_creator(hparams):
   """Get the right model class depending on configuration."""
@@ -103,108 +37,117 @@ def get_model_creator(hparams):
     model_creator = basicmodel.Model
   return model_creator
 
-def start_sess_and_load_model(infer_model, ckpt_path):
+def start_sess_and_load_model(infer_model, ckpt):
   """Start session and load model."""
   sess = tf.Session(
       graph=infer_model.graph, config=utils.get_config_proto())
+  
   with infer_model.graph.as_default():
     loaded_infer_model = model_helper.load_model(
-        infer_model.model, ckpt_path, sess, "infer")
+        infer_model.model, ckpt, sess, "infer")
   return sess, loaded_infer_model
 
-def inference(ckpt_path,
+def inference(hparams,
+              model_dir,
+              ckpt,
               inference_input_file,
               inference_output_file,
-              hparams,
+              num_gpu=1,
+              batch_size=16,
               scope=None):
   """Perform translation."""
   model_creator = get_model_creator(hparams)
   infer_model = model_helper.create_infer_model(model_creator, hparams, scope)
-  sess, loaded_infer_model = start_sess_and_load_model(infer_model, ckpt_path)
+
+  if ckpt is None:
+    ckpt = tf.train.latest_checkpoint(model_dir)
+  else:
+    ckpt = os.path.join(model_dir, "model.ckpt-{:d}".format(ckpt))
+
+  sess, loaded_infer_model = start_sess_and_load_model(infer_model, ckpt)
 
   output_infer = inference_output_file
 
   # Read data
-  src, tgt, ptc_filenames, transform, sample_info = load_data(inference_input_file, hparams)
-  
-  use_lidar = hparams.lidar
-
-  iterator_feed_dict = {
-      infer_model.src_placeholder: src,
-      infer_model.batch_size_placeholder: hparams.infer_batch_size
-  }
-
-  if use_lidar:
-    iterator_feed_dict[infer_model.ptc_placeholder] = ptc_filenames
-    if hparams.lidar_type == "raw":
-      iterator_feed_dict[infer_model.transform_placeholder] = transform
+  dataset = load_data(inference_input_file, hparams)
+  infer_df = iterator_utils.get_infer_iterator(hparams, dataset, num_gpu, batch_size)
+  infer_df.reset_state()
 
   with infer_model.graph.as_default():
-    sess.run(
-        infer_model.iterator.initializer,
-        feed_dict=iterator_feed_dict)
     # Decode
     utils.print_out("# Start decoding")
-    if hparams.inference_indices:
-      _decode_inference_indices(
-          loaded_infer_model,
-          sess,
-          output_infer=output_infer,
-          inference_indices=hparams.inference_indices)
-    else:
-      _decode_and_evaluate(
-          "infer",
-          loaded_infer_model,
-          sess,
-          output_infer,
-          tgt,
-          metrics=hparams.metrics)
+    _decode_and_evaluate(
+        hparams,
+        "infer",
+        loaded_infer_model,
+        sess,
+        output_infer,
+        infer_df,
+        metrics=hparams.metrics)
 
-def _decode_inference_indices(model, sess, output_infer, inference_indices):
-  """Decoding only a specific set of sentences."""
-  utils.print_out("  regression {} , num sequences {}.".format(
-      output_infer, len(inference_indices)))
-
-  for idx in inference_indices:
-    outputs, _ = model.decode(sess)
-    filename = output_infer + str(idx) + ".npy"
-    np.save(filename, outputs)
-
-  utils.print_out("  done")
-
-def _decode_and_evaluate(name,
+def _decode_and_evaluate(hparams,
+                         name,
                          model,
                          sess,
                          pred_file,
-                         target,
+                         infer_dataflow,
                          metrics):
   """Decode a test set and compute a score according to the evaluation task."""
   # Decode
-  utils.print_out("  decoding to output %s" % pred_file)
+  utils.print_out("  Inference output to %s" % pred_file)
 
-  decode_list = []
-  num_outputs = 0
-  while True:
-    try:
-      outputs, _ = model.decode(sess)
-      batch_size = outputs.shape[0]
-      num_outputs += batch_size
-      decode_list.append(outputs)
-      utils.print_out("  num_outputs {}".format(num_outputs), end='\r')
-    except tf.errors.OutOfRangeError:
-      utils.print_out("  done, num outputs {}".format(num_outputs))
-      decoded = np.concatenate(decode_list, axis=0)
-      break
+  # Get placeholders
+  placeholders = model.placeholders
+  ph_list = list(filter(lambda x: "source_placeholder" in x.name, placeholders))
 
-  np.save(pred_file, decoded)
+  if hparams.stop_discriminator:
+    ph_list += list(filter(lambda x: "stop_placeholder" in x.name, placeholders))
+  
+  batch_size_ph = list(filter(lambda x: "batch_size" in x.name, placeholders))
+  ph_list += batch_size_ph
+
+  inputs = []
+  target = []
+  regression = []
+  stop = []
+  for iters, batches in enumerate(infer_dataflow.get_data()):
+    batch_sizes = [batch.shape[0] for batch in batches[0]]
+    feed_dict={key:value for (key, value) in zip(
+        ph_list,
+        reduce(operator.add, batches[:-1]) + batch_sizes)}
+
+    outputs = model.infer(sess, feed_dict)
+    utils.print_out("  num_iters {}".format(iters), end='\r')
+    target += batches[-1]
+    regression += [outputs.regression]
+    
+    if hparams.stop_discriminator:
+      inputs += batches[0]
+      stop += [outputs.stop]
+
+  regression = np.concatenate(regression, axis=0)
+  target = np.concatenate(target, axis=0)
+
+  with open(pred_file, 'wb') as writer:
+    pkl.dump(regression, writer)
+
+  if hparams.stop_discriminator:
+    inputs = np.concatenate(inputs, axis=0)
+    stop = np.concatenate(stop, axis=0)
+    with open("stop_{:s}".format(pred_file), 'wb') as writer:
+      pkl.dump(stop, writer)
+    
+    regression[stop, :, :] = np.tile(inputs[stop, -1:, :hparams.trajectory_dims], [1, hparams.target_length, 1])
 
   # Evaluation
-  error = target - decoded
+  error = target - regression
   evaluation_scores = {}
   for metric in metrics:
     score = evaluation_utils.evaluate(
+    hparams,
     error,
     metric)
+
     evaluation_scores[metric] = score
     utils.print_out("  {} {}: {:.1f}".format(metric, name, score))
 

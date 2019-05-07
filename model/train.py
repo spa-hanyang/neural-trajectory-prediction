@@ -18,6 +18,7 @@ import numpy as np
 
 from .  import model as basicmodel
 from .  import pointnet_model
+from .  import stop_discriminator_model
 from .  import model_helper
 from .  import inference
 from .utils import misc_utils as utils
@@ -25,6 +26,8 @@ from .utils import evaluation_utils
 from .utils import iterator_utils
 
 import pdb
+
+SKIP_INIT_EVAL = True
 
 __all__ = [
     "run_eval", "init_stats", "update_stats",
@@ -44,11 +47,11 @@ def run_eval(model_dir,
         eval_model.model, model_dir, eval_sess, "eval")
   
   data_path = os.path.abspath(hparams.data_path)
-  pkl_path = os.path.join(data_path, 'processed', 'pickle', 'absolute')
+  pkl_path = os.path.join(data_path, 'processed', 'pickle', hparams.trajectory_code)
 
   dev_file = os.path.join(pkl_path, "{}.pkl".format(hparams.dev_prefix))
   dev_dataset = inference.load_data(dev_file, hparams)
-  dev_df = iterator_utils.get_infer_iterator(dev_dataset, hparams, os.path.join(model_dir, 'dev.lmdb'))
+  dev_df = iterator_utils.get_eval_iterator(hparams, dev_dataset, os.path.join(model_dir, 'dev.lmdb'))
   dev_loss, dev_scores = _eval(loaded_eval_model, global_step, eval_sess,
                                hparams, dev_df, "dev", summary_writer)
   
@@ -57,7 +60,7 @@ def run_eval(model_dir,
   if use_test_set and hparams.test_prefix:
     test_file = os.path.join(pkl_path, "{}.pkl".format(hparams.test_prefix))
     test_dataset = inference.load_data(test_file, hparams)
-    test_df = iterator_utils.get_infer_iterator(test_dataset, hparams, os.path.join(model_dir, 'test.lmdb'))
+    test_df = iterator_utils.get_eval_iterator(hparams, test_dataset, os.path.join(model_dir, 'test.lmdb'))
     test_loss, test_scores = _eval(loaded_eval_model, global_step, eval_sess,
                                    hparams, test_df, "test", summary_writer)
 
@@ -67,15 +70,19 @@ def run_eval(model_dir,
       "dev_scores": dev_scores,
       "test_scores": test_scores}
   result_summary = _format_results("dev", dev_loss, dev_scores, hparams.metrics)
-  if hparams.test_prefix:
-    result_summary += ", " + _format_results("test", test_loss, test_scores,
+  
+  if use_test_set and hparams.test_prefix:
+    result_summary += _format_results("test", test_loss, test_scores,
                                              hparams.metrics)
+
+  utils.print_out(result_summary)
+
   return result_summary, global_step, metrics
 
 def init_stats():
   """Initialize statistics that we want to accumulate."""
   return {"step_time": 0.0,
-          "train_loss": 0.0,
+          "regression_loss": 0.0,
           "grad_norm": 0.0}
 
 def update_stats(stats, start_time, step_result, hparams):
@@ -84,24 +91,24 @@ def update_stats(stats, start_time, step_result, hparams):
 
   # Update statistics
   stats["step_time"] += time.time() - start_time
-  stats["train_loss"] += output_tuple.train_loss
+  stats["regression_loss"] += output_tuple.regression_loss
   stats["grad_norm"] += output_tuple.grad_norm
 
   return (output_tuple.global_step, output_tuple.learning_rate,
           output_tuple.train_summary)
 
-def print_step_info(prefix, global_step, info, result_summary, log_f):
+def print_step_info(prefix, global_step, info, log_f):
   """Print all info at the current global step."""
   utils.print_out(
-      "{:s} step {:d}, lr {:g}, step-time {:.2f}s, gN {:.2f}, train_loss {:.2f}, {:s}".format(
+      "{:s} step {:d}, lr {:g}, step-time {:.2f}s, gN {:.2f}, regression_loss {:.2f}, {:s}".format(
        prefix, global_step, info["learning_rate"], info["avg_step_time"],
-       info["avg_grad_norm"], info["avg_train_loss"], time.ctime()), log_f)
+       info["avg_grad_norm"], info["avg_regression_loss"], time.ctime()), log_f)
 
 def process_stats(stats, info, global_step, steps_per_stats, log_f):
   """Update info and check for overflow."""
   # Per-step info
   info["avg_step_time"] = stats["step_time"] / steps_per_stats
-  info["avg_train_loss"] = stats["train_loss"] / steps_per_stats
+  info["avg_regression_loss"] = stats["regression_loss"] / steps_per_stats
   info["avg_grad_norm"] = stats["grad_norm"] / steps_per_stats
 
 def before_train(loaded_train_model, train_model, train_sess, global_step,
@@ -109,7 +116,7 @@ def before_train(loaded_train_model, train_model, train_sess, global_step,
   """Misc tasks to do before training."""
   stats = init_stats()
   info = {"avg_step_time": 0.0,
-          "avg_train_loss": 0.0,
+          "avg_regression_loss": 0.0,
           "avg_grad_norm": 0.0,
           "learning_rate": loaded_train_model.learning_rate.eval(
               session=train_sess)}
@@ -122,33 +129,11 @@ def get_model_creator(hparams):
   """Get the right model class depending on configuration."""
   if hparams.lidar:
     model_creator = pointnet_model.Model
+  elif hparams.stop_discriminator:
+    model_creator = stop_discriminator_model.Model
   else:
     model_creator = basicmodel.Model
   return model_creator
-
-class TimeoutException(Exception):
-    pass
-
-def timeout_handler(signum, frame):
-    raise TimeoutException
-
-def getch():
-    signal.signal(signal.SIGALRM, timeout_handler)
-    fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
-
-    signal.alarm(1)
-    try:
-      tty.setraw(sys.stdin.fileno())
-      ch = sys.stdin.read(1)
-      signal.alarm(0)
-    except TimeoutException:
-      ch = None
-      pass
- 
-    finally:
-      termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-    return ch
 
 def train(hparams, scope=None):
   log_device_placement = hparams.log_device_placement
@@ -156,12 +141,10 @@ def train(hparams, scope=None):
   num_train_epochs = hparams.num_train_epochs
   steps_per_stats = hparams.steps_per_stats
   evals_per_epoch = hparams.evals_per_epoch
+
   model_creator = get_model_creator(hparams)
-  
-  # unified_model = model_helper.create_unified_model(model_creator, hparams, scope)
   train_model = model_helper.create_train_model(model_creator, hparams, scope)
   eval_model = model_helper.create_eval_model(model_creator, hparams, scope)
-  # infer_model = model_helper.create_infer_model(model_creator, hparams, scope)
 
   # Log and output files
   datecode = datetime.now().strftime("%Y%m%d.%H%M")
@@ -173,24 +156,15 @@ def train(hparams, scope=None):
   config_proto = utils.get_config_proto(
       log_device_placement=log_device_placement)
 
-  # unified_sess = tf.Session(config=config_proto, graph=unified_model.graph)
   train_sess = tf.Session(config=config_proto, graph=train_model.graph)
   eval_sess = tf.Session(config=config_proto, graph=eval_model.graph)
-  # infer_sess = tf.Session(config=config_proto, graph=infer_model.graph)
   
-  pkl_path = os.path.join(hparams.data_path, 'processed', 'pickle', 'absolute')
+  pkl_path = os.path.join(hparams.data_path, 'processed', 'pickle', hparams.trajectory_code)
 
   train_file = os.path.join(pkl_path, "{}.pkl".format(hparams.train_prefix))
 
   train_dataset = inference.load_data(train_file, hparams)
-  train_df = iterator_utils.get_iterator(train_dataset, hparams, os.path.join(model_dir, 'train.lmdb'), shuffle=True, drop_remainder=True, nr_proc=4)
-
-  # with unified_model.graph.as_default():
-  #   loaded_unified_model, global_step = model_helper.create_or_load_model(
-  #       unified_model.model, model_dir, unified_sess, "train")
-  # # Summary writer
-  # summary_writer = tf.summary.FileWriter(
-  #     model_dir, unified_model.graph)
+  train_df = iterator_utils.get_iterator(hparams, train_dataset, os.path.join(model_dir, 'train.lmdb'), shuffle=True, drop_remainder=True, nr_proc=4)
 
   with train_model.graph.as_default():
     loaded_train_model, global_step = model_helper.create_or_load_model(
@@ -199,23 +173,8 @@ def train(hparams, scope=None):
   summary_writer = tf.summary.FileWriter(
       model_dir, train_model.graph)
 
-  utils.print_out("# Beginning the test evaluation.")
-  utils.print_out("# Press \"s\" within 3 seconds to skip this test.")
-  skip_test = False
-  time_out = time.time()
-  while(True):
-    if time.time() - time_out > 3:
-      break
-    
-    char = getch()
-    if (char == "s"):
-      print("Skip test!")
-      skip_test = True
-      break
-    else:
-      continue
-  
-  if not skip_test:
+  if not SKIP_INIT_EVAL:
+    utils.print_out("# Beginning the test evaluation.")
     run_eval(model_dir, eval_model, eval_sess, hparams, summary_writer)
 
   last_stats_step = global_step
@@ -229,14 +188,26 @@ def train(hparams, scope=None):
   steps_per_eval = len(train_df) // evals_per_epoch + 1
   last_eval_step = global_step
 
+  # Get placeholders
+  placeholders = loaded_train_model.placeholders
+  source_ph = list(filter(lambda x: "source_placeholder" in x.name, placeholders))
+  target_ph = list(filter(lambda x: "target_placeholder" in x.name, placeholders))
+  ph_list = source_ph + target_ph
+  if hparams.stop_discriminator:
+    ph_list += list(filter(lambda x: "stop_placeholder" in x.name, placeholders))
+  
+  batch_size_ph = list(filter(lambda x: "batch_size" in x.name, placeholders))
+  ph_list += batch_size_ph
+
   while hparams.epoch < num_train_epochs:
+
     for batches in train_df.get_data():
       start_time = time.time()
 
       # feed dict
       batch_sizes = [batch.shape[0] for batch in batches[0]]
       feed_dict={key:value for (key, value) in zip(
-          loaded_train_model.placeholders,
+          ph_list,
           reduce(operator.add, batches) + batch_sizes)}
 
       # Train step
@@ -248,7 +219,7 @@ def train(hparams, scope=None):
         last_stats_step = global_step
         summary_writer.add_summary(step_summary, global_step)
         process_stats(stats, info, global_step, steps_per_stats, log_f)
-        print_step_info("# Train, ", global_step, info, None, log_f)
+        print_step_info("# Train, ", global_step, info, log_f)
         # Reset statistics
         stats = init_stats()
       
@@ -283,26 +254,22 @@ def train(hparams, scope=None):
       os.path.join(model_dir, "model.ckpt"),
       global_step=global_step)
 
-  result_summary, _, final_eval_metrics = run_eval(model_dir, eval_model, eval_sess, hparams, summary_writer)
+  _, _, final_eval_metrics = run_eval(model_dir, eval_model, eval_sess, hparams, summary_writer)
 
-  print_step_info("# Final, ", global_step, info, result_summary, log_f)
+  print_step_info("# Final, ", global_step, info, log_f)
   utils.print_out("# Done training!")
 
   summary_writer.close()
 
   return final_eval_metrics, global_step
 
-def _format_results(name, loss, scores, metrics):
+def _format_results(name, losses, scores, metrics):
   """Format results."""
   result_str = ""
-  if loss:
-    result_str = "{} loss {:.2f}".format(name, loss)
-  if scores:
-    for metric in metrics:
-      if result_str:
-        result_str += ", {} {} {:.1f}".format(name, metric, scores[metric])
-      else:
-        result_str = "{} {} {:.1f}".format(name, metric, scores[metric])
+  for losses_key in losses:
+    result_str += "{} {}: {:.3f}\n".format(name, losses_key, losses[losses_key])
+  for metric in metrics:
+    result_str += "{} {} {:.3f}\n".format(name, metric, scores[metric])
   return result_str
 
 def get_best_results(hparams):
@@ -325,16 +292,17 @@ def _eval(model, global_step, sess, hparams, dataflow,
   dataflow.reset_state()
   utils.print_out("# {} batches are ready!".format(len(dataflow)))
 
-  prediction, gt, loss = model_helper.compute_loss_and_predict(
-      model, sess, dataflow, label)
-  utils.add_summary(summary_writer, global_step, label+"_loss", loss)
+  prediction, gt, losses = model_helper.compute_loss_and_predict(
+      hparams, model, sess, dataflow, label)
+  
+  for key in losses.keys():
+    utils.add_summary(summary_writer, global_step, label+'_'+key, losses[key])
 
   scores = {}
   error = gt - prediction
   for metric in metrics:
-    score = evaluation_utils.evaluate(error, metric)
+    score = evaluation_utils.evaluate(hparams, error, metric)
     scores[metric] = score
-    utils.print_out("  {} {}: {:.4f}".format(metric, label, score))
 
   if trained:
     with open(output_file, 'wb') as writer:
@@ -350,10 +318,6 @@ def _eval(model, global_step, sess, hparams, dataflow,
         setattr(hparams, best_metric_label, "{:.4f}".format(scores[metric]))
         with open(os.path.join(getattr(hparams, best_metric_label + "_dir"), "ckpt.txt"), 'a') as writer:
           writer.write(str(model.global_step) + '\n')
-        # model.saver.save(
-        #     sess,
-        #     os.path.join(
-        #         getattr(hparams, best_metric_label + "_dir"), "model.ckpt"),
-        #         global_step=model.global_step)
+
     utils.save_hparams(model_dir, hparams)
-  return loss, scores
+  return losses, scores

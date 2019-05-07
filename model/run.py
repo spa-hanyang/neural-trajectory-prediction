@@ -41,6 +41,8 @@ def add_arguments(parser):
                       help="Model name")
   parser.add_argument("--data_path", type=str, default="./dataset",
                       help="dataset path")
+  parser.add_argument("--trajectory_code", type=str, default="filled/absolute_50",
+                      help="preprocessed trajecotory code")
   parser.add_argument("--train_prefix", type=str, default="train",
                       help="Train dataset prefix")
   parser.add_argument("--dev_prefix", type=str, default="dev",
@@ -54,7 +56,7 @@ def add_arguments(parser):
 
   ## 2. hardware parameters
   parser.add_argument("--gpu_id", type=str, default="0",
-                      help="gpu_ids to use for training/inference (comma-separated).")
+                      help="gpu_ids to use for training (comma-separated).")
   parser.add_argument("--num_cpu", type=int, default=20,
                       help="Number of CPUs.")
   parser.add_argument("--colocate_gradients_with_ops", type="bool", nargs="?", default=True,
@@ -62,25 +64,33 @@ def add_arguments(parser):
 
   ## 3. Sequence pre-processing parameters
   parser.add_argument("--input_dims", type=int, default=2,
-                      help="input (observation) diemension. 2: (x,y) only, 3: (x,y,z).")
+                      help="left for the compatibility (will soon be removed)")
+  parser.add_argument("--target_dims", type=int, default=2,
+                      help="left for the compatibility (will soon be removed)")
+
+  parser.add_argument("--trajectory_dims", type=int, default=2,
+                      help="trajectory diemension 2: (x,y) 3: (x,y,z)..")
   parser.add_argument("--input_length", type=int, default=30,
                       help="input (observation) length.")
-  parser.add_argument("--target_dims", type=int, default=2,
-                      help="target diemension 2: (x,y) only, 3: (x,y,z).")
   parser.add_argument("--target_length", type=int, default=20,
                       help="target length.")
-  parser.add_argument("--relative", action='store_true', help="Use relative trajectory. In this case, input_dims is force set to 4:(x,y,ego_vel,ego_steer).")
-  parser.add_argument("--single_target", action='store_true', help="One shot prediction to the latest target.")
-  parser.add_argument("--single_target_horizon", type=int, default=20,
-                      help="One shot prediction to the latest target.")
   parser.add_argument("--target_sampling_period", type=int, default=1,
                       help="""Sampling period to apply on the raw target.
                             \"target length\" must be divisible by this.""")
+  # parser.add_argument("--relative", action='store_true', help="Use relative trajectory. In this case, input_dims is force set to 4:(x,y,ego_vel,ego_steer).")
+  
+  parser.add_argument("--single_target", action='store_true', help="One shot prediction to the latest target.")
+  parser.add_argument("--single_target_horizon", type=int, default=20,
+                      help="One shot prediction to a target frame.")
+
+  
   # parser.add_argument("--orientation", action='store_true',
   #                     help="Concatenate orientation to input. The input dimension is increased by one if true.")
   parser.add_argument("--zero_centered_trajectory", action='store_true',
                       help=("Whether to zero center the trajectory"
                             "by subtracting the final observation location."))
+  parser.add_argument("--polar_representation", action='store_true',
+                      help="new")
 
   ## 4. lidar inputs
   parser.add_argument("--lidar", action='store_true', help="Use lidar pointcloud fusion.")
@@ -150,20 +160,27 @@ def add_arguments(parser):
   parser.add_argument("--cnn_encoder_dilation_rates", type="list", default=[2, 2, 2, 2],
                       help="List of the cnn dilation rates in order.")
 
+  ## Stop discriminator
+  parser.add_argument("--stop_discriminator", action='store_true',
+                      help="new")
+  parser.add_argument("--stop_discriminator_units", type="list", default=[32, 16, 1],
+                      help="List of the stop discriminator unit sizes in order.")
+
   ## 6. trajectory decoder parameters
-  parser.add_argument("--decoder_type", type=str, default="fc",
+  parser.add_argument("--decoder_type", type=str, default="rnn",
                       help="fc | rnn. fc decoder is applicable only if \"single_target\" is True")
 
   #### 6.1. rnn decoder parameters
+  parser.add_argument("--rnn_decoder_inputs", type=str, default="dummy",
+                      help="dummy | encoder_output")
   parser.add_argument("--rnn_decoder_layers", type=int, default=1,
                       help="number or rnn layers.")
   parser.add_argument("--rnn_decoder_units", type=int, default=48,
                       help="rnn unit size.")
   parser.add_argument("--rnn_decoder_type", type=str, default="cudnn_lstm",
                       help="cudnn_lstm | lstm (not implemented) | cudnn_gru (not implemented) | gru (not implemented)")
-  parser.add_argument("--output_projector_units", type="list", default=[2],
+  parser.add_argument("--output_projector_units", type="list", default=[16, 2],
                       help="List of the output projector unit sizes in order.")
-  parser.add_argument("--skip_connection_in_time", action='store_true', help="Skip connection in time.")
   
   #### 6.2. fc decoder
   parser.add_argument("--fc_decoder_units", type="list", default=[64, 2],
@@ -182,7 +199,7 @@ def add_arguments(parser):
                     help="rnn_weight_decay_factor.")
   parser.add_argument("--loss", type=str, default="weighted_smooth_l1",
                       help="l2 | weighted_smooth_l1")
-  parser.add_argument("--num_train_epochs", type=int, default=30,
+  parser.add_argument("--num_train_epochs", type=int, default=50,
                       help="Num epochs to train.")
   parser.add_argument("--batch_size", type=int, default=128, help="Batch size.")
   parser.add_argument("--bn_init_decay", type=float, default=0.5,
@@ -193,8 +210,8 @@ def add_arguments(parser):
                       help="bn_decay_rate.")
   parser.add_argument("--bn_decay_clip", type=float, default=0.99,
                       help="bn_decay_clip.")
-  parser.add_argument("--learning_rate_decay_epochs", type="list", default=[2,5,10,20])
-  parser.add_argument("--learning_rate_decay_ratio", type=float, default=0.8)
+  parser.add_argument("--learning_rate_decay_epochs", type="list", default=[15,30,45])
+  parser.add_argument("--learning_rate_decay_ratio", type=float, default=0.5)
 
   ## 8. Misc
   parser.add_argument("--log_device_placement", type="bool", nargs="?",
@@ -213,14 +230,17 @@ def add_arguments(parser):
                       help="Max number of checkpoints to save.")
 
   # Inference
-  parser.add_argument("--ckpt", type=str, default="",
-                      help="Checkpoint file to load a model for inference.")
+  parser.add_argument("--ckpt", type=int, default=None,
+                      help="Checkpoint number to load a model for inference.")
   parser.add_argument("--inference_input_file", type=str, default=None,
                       help="Sequence to predict")
-  parser.add_argument("--infer_batch_size", type=int, default=128,
-                      help="Batch size for inference mode.")
   parser.add_argument("--inference_output_file", type=str, default=None,
                       help="Output file to store decoding results.")
+  parser.add_argument("--infer_batch_size", type=int, default=128,
+                      help="Batch size for inference mode.")
+  parser.add_argument("--infer_gpu_id", type=str, default="0",
+                      help="gpu_ids to use for inference (comma-separated).")
+
 
 def create_hparams(flags):
   """ Create training hyper parameters """
@@ -228,6 +248,7 @@ def create_hparams(flags):
       # 1. Model and data locations
       model_name=flags.model_name,
       data_path=flags.data_path,
+      trajectory_code=flags.trajectory_code,
       train_prefix=flags.train_prefix,
       dev_prefix=flags.dev_prefix,
       test_prefix=flags.test_prefix,
@@ -237,18 +258,20 @@ def create_hparams(flags):
       num_cpu=flags.num_cpu,
       colocate_gradients_with_ops=flags.colocate_gradients_with_ops,
       # 3. Sequence pre-processing parameters
-      input_dims=flags.input_dims,
       input_length=flags.input_length,
-      target_dims=flags.target_dims,
       target_length=flags.target_length,
-      relative=flags.relative,
+      trajectory_dims=flags.trajectory_dims,
       single_target=flags.single_target,
       # orientation=flags.orientation,
       zero_centered_trajectory=flags.zero_centered_trajectory,
+      polar_representation=flags.polar_representation,
       # 4. lidar inputs
       lidar=flags.lidar,
       # 5. trajectory encoder parameters
       encoder_type=flags.encoder_type,
+
+      stop_discriminator=flags.stop_discriminator,
+  
       # 6. trajectory decoder parameters
       decoder_type=flags.decoder_type,
       # 7. Training parameters
@@ -273,10 +296,7 @@ def create_hparams(flags):
       evals_per_epoch=flags.evals_per_epoch,
       metrics=flags.metrics.split(","),
       random_seed=flags.random_seed,
-      num_keep_ckpts=flags.num_keep_ckpts,
-
-      # Inference
-      infer_batch_size=flags.infer_batch_size)
+      num_keep_ckpts=flags.num_keep_ckpts)
   
   ## Set derived parmeters
   # num_gpu
@@ -285,10 +305,23 @@ def create_hparams(flags):
     raise ValueError("""batch_size {:d} is not evenly divisible\
                      by num_gpu {:d}.""".format(hparams.batch_size, hparams.num_gpu))
   
-  if hparams.relative:
-    if hparams.zero_centered_trajectory:
-      raise ValueError("zero_centered_trajectory cannot be set for relative trajectory.")
-    _add_argument(hparams, "input_dims", 4)
+  # if hparams.relative:
+  #   if hparams.zero_centered_trajectory:
+  #     raise ValueError("zero_centered_trajectory cannot be set for relative trajectory.")
+  #   _add_argument(hparams, "input_dims", 4)
+  if hparams.trajectory_dims == 2:
+    _add_argument(hparams, "input_dims", 2)
+    _add_argument(hparams, "target_dims", 2)
+  elif hparams.trajectory_dims == 3:
+    _add_argument(hparams, "input_dims", 3)
+    _add_argument(hparams, "target_dims", 3)
+  else:
+    raise ValueError("trajectory_dims must be \"2\" or \"3\".")
+
+  if hparams.polar_representation:
+    _add_argument(hparams, "input_dims", hparams.input_dims + 3) # l2 distance, cos, sin
+    _add_argument(hparams, "target_dims", hparams.target_dims + 3)
+    _add_argument(hparams, "input_length", hparams.input_length - 1)
     
   # encoder settings
   if hparams.encoder_type == "rnn":
@@ -311,12 +344,16 @@ def create_hparams(flags):
   else:
     raise ValueError("Unknown encoder_type {s}".format(hparams.encoder_type))
   
+  # Stop discriminator
+  if hparams.stop_discriminator:
+    _add_argument(hparams, "stop_discriminator_units", flags.stop_discriminator_units)
+
   # decoder settings
   if hparams.decoder_type == "rnn":
+    _add_argument(hparams, "rnn_decoder_inputs", flags.rnn_decoder_inputs)
     _add_argument(hparams, "rnn_decoder_layers", flags.rnn_decoder_layers)
     _add_argument(hparams, "rnn_decoder_units", flags.rnn_decoder_units)
     _add_argument(hparams, "rnn_decoder_type", flags.rnn_decoder_type)
-    _add_argument(hparams, "skip_connection_in_time", flags.skip_connection_in_time)
     _add_argument(hparams, "output_projector_units", flags.output_projector_units)
   elif hparams.decoder_type == "fc":
     _add_argument(hparams, "fc_decoder_units", flags.fc_decoder_units)
@@ -328,6 +365,7 @@ def create_hparams(flags):
     _add_argument(hparams, "single_target_horizon", flags.single_target_horizon)
     if hparams.single_target_horizon > hparams.target_length:
       raise ValueError("target horizon cannot be longer then target length.")
+    _add_argument(hparams, "target_length", 1)
     
   else:
     # No fc decoder
@@ -339,6 +377,7 @@ def create_hparams(flags):
     if hparams.target_length % hparams.target_sampling_period != 0:
       raise ValueError("""target_length {:d} is not evenly divisible\
                        by target_sampling_period {:d}.""".format(hparams.target_length, hparams.target_sampling_period))
+    _add_argument(hparams, "target_length", int(hparams.target_length // hparams.target_sampling_period))
 
   # lidar settings
   if hparams.lidar:
@@ -414,7 +453,7 @@ def run_main(flags, default_hparams, train_fn, inference_fn):
     random.seed(random_seed)
     np.random.seed(random_seed)
 
-  ## Train
+  # Model Directories
   out_dir = os.path.abspath(flags.out_dir)
   model_dir = os.path.join(out_dir, flags.model_name)
   
@@ -424,48 +463,45 @@ def run_main(flags, default_hparams, train_fn, inference_fn):
   hparams = create_or_load_hparams(
       model_dir, default_hparams)
   
-  # Set gpu
-  os.environ["CUDA_VISIBLE_DEVICES"] = hparams.gpu_id
-
-  # Copy model codes
-  code_dir = os.path.join(model_dir, 'model_code')
-
-  if tf.gfile.Exists(code_dir):
-    copy_idx = 0
-    while(True):
-      copy_dir = os.path.join(code_dir, '_{:d}'.format(copy_idx))
-      if tf.gfile.Exists(copy_dir):
-        copy_idx += 1
-      else:
-        shutil.copytree(os.path.abspath('./model'), copy_dir)
-        break
-  else:
-    shutil.copytree(os.path.abspath('./model'), code_dir)
-
   # Inference
   if flags.inference_input_file:
+    # Inference GPU
+    os.environ["CUDA_VISIBLE_DEVICES"] = flags.infer_gpu_id
+    num_gpu = len(flags.infer_gpu_id.split(","))
+    # Inference batch size
+    batch_size = flags.infer_batch_size
+    # CheckPoint code
+    ckpt = flags.ckpt
     # Inference input file
     input_file = flags.inference_input_file
-    
-    # Inference output directory
+    # Inference output file
     output_file = flags.inference_output_file
-    assert output_file
     output_dir = os.path.dirname(output_file)
-    if not tf.gfile.Exists(output_dir): tf.gfile.MakeDirs(output_dir)
-    
-    # Inference indices
-    hparams.inference_indices = None
-    #  if flags.inference_list:
-    #    (hparams.inference_indices) = (
-    #        [int(token)  for token in flags.inference_list.split(",")])
+    if not tf.gfile.Exists(output_dir):
+      tf.gfile.MakeDirs(output_dir)
 
-    # Inference
-    ckpt = flags.ckpt
-    if not ckpt:
-      ckpt = tf.train.latest_checkpoint(model_dir)
-    inference_fn(ckpt, input_file, output_file, hparams)
+    # Do inference
+    inference_fn(hparams, model_dir, ckpt, input_file, output_file, num_gpu, batch_size)
+
   # Train
   else:
+    os.environ["CUDA_VISIBLE_DEVICES"] = hparams.gpu_id
+    # Backup model codes
+    code_dir = os.path.join(model_dir, 'model_code')
+
+    if tf.gfile.Exists(code_dir):
+      copy_idx = 0
+      while(True):
+        copy_dir = os.path.join(code_dir, '_{:d}'.format(copy_idx))
+        if tf.gfile.Exists(copy_dir):
+          copy_idx += 1
+        else:
+          shutil.copytree(os.path.abspath('./model'), copy_dir)
+          break
+    else:
+      shutil.copytree(os.path.abspath('./model'), code_dir)
+    
+    # Do train
     train_fn(hparams)
 
 def main(unused_argv):

@@ -4,6 +4,7 @@ from __future__ import print_function
 
 import os
 import collections
+import time
 
 import numpy as np
 from tensorpack.dataflow.parallel_map import MultiThreadMapData
@@ -53,39 +54,65 @@ def TR(tx, ty, tz, rx, ry, rz, scale_factor=1.0, degrees=False):
 hdl_to_vfs = transform_tuple(TR(193.42, 0, -175, 0.0286, 180.50, -1.34, scale_factor=1.0, degrees=True),
                              TR(203, -2.5, -150, 179.4, 0.15, -91.3, scale_factor=1.0, degrees=True))
 
-def map_func(dataset, hparams):
+def map_func(hparams, dataset):
   source = dataset['source']
   target = dataset['target']
   version = dataset['dataset_version']
   code = dataset['sample_code']
   frame = dataset['reference_time']
-  sequence_id = dataset['sequence_id']
+  # object_id = dataset['object_id']
+  # sequence_id = dataset['sequence_id']
   
   data_path = os.path.abspath(hparams.data_path)
+  trajectory_dims = hparams.trajectory_dims
 
-  reference_idx = hparams.input_length - 1
-  src_ref = source[reference_idx, :3].copy()  # deep copy source at ref idx (to be used in lidar processing).
-  
-  if hparams.relative:
-    src = source[:, [0,1,3,4]]
-    
-  else:
-    src = source[:, :3] # source in (m) metric
-
-  input_dims = hparams.input_dims
-  target_dims = hparams.target_dims
-
-  if hparams.single_target:
-    tgt = np.take(target[:, :target_dims], [hparams.single_target_horizon - 1], axis=0)
-  else:
-    target_sampling_period = hparams.target_sampling_period
-    tgt = target[target_sampling_period-1::target_sampling_period, :target_dims]
-  
-  src = src[:, :input_dims]
+  src_trajectory = source[:, :trajectory_dims]
+  tgt_trajectory = target[:, :trajectory_dims]
 
   if hparams.zero_centered_trajectory:
-    tgt -= np.take(src[:, :target_dims], [reference_idx], axis=0)
-    src -= np.take(src, [reference_idx], axis=0)
+    src_ref = src_trajectory[-1, :] # Copy source at the reference time (keep dims)
+    src = src_trajectory - src_ref
+    tgt = tgt_trajectory - src_ref
+  
+  else:
+    src = src_trajectory.copy()
+    tgt = tgt_trajectory.copy()
+
+  if hparams.polar_representation:
+    # Source
+    diffs = src[1:, :] - tgt[:-1, :]
+    l2_distance = np.sqrt(np.sum(diffs**2, axis=1))
+    cos = diffs[:, 0] / l2_distance
+    sin = diffs[:, 1] / l2_distance
+    src_polar = np.array([l2_distance, cos, sin]).T
+    src = np.concatenate([src[1:, :], src_polar], axis=0) # source length decreases by 1.
+    # Target
+    src_ref = src[-1, :] # Copy source at the reference time (keep dims)
+    diffs = tgt - np.concatenate([src_ref, tgt[:-1, :]], axis=0)
+    l2_distance = np.sqrt(np.sum(diffs**2, axis=1))
+    cos = diffs[:, 0] / l2_distance
+    sin = diffs[:, 1] / l2_distance
+    tgt_polar = np.array([l2_distance, cos, sin]).T
+    tgt = np.concatenate([tgt, tgt_polar], axis=0)
+  
+  if hparams.single_target:
+    tgt = np.take(tgt, [hparams.single_target_horizon - 1], axis=0)
+    
+  else:
+    target_sampling_period = hparams.target_sampling_period
+    tgt = tgt[target_sampling_period-1::target_sampling_period, :]
+
+  stop = None
+  if hparams.stop_discriminator:
+    src_ref = src_trajectory[-1, :]
+    src_samples = src_trajectory[[0,9,19], :]
+    diffs = -src_samples + src_ref
+    l2_distance = np.sqrt(np.sum(diffs**2, axis=1))
+
+    if np.abs(np.average(l2_distance, weights=[0.5, 0.3, 0.2])) < 1:
+      stop = 1.0
+    else:
+      stop = 0.0
 
   lidar = None
   # if raw lidar point cloud
@@ -207,33 +234,38 @@ def map_func(dataset, hparams):
     else:
       raise ValueError("Unknown lidar type {}".format(hparams.lidar_type))
 
-  if lidar is None:
-    output_tuple = (src, tgt)
-  else:
-    output_tuple = (src, lidar, tgt)
+  output_tuple = (src, )
+
+  if lidar is not None:
+    output_tuple += (lidar, )
+  
+  if stop is not None:
+    output_tuple += (stop, )
+  
+  output_tuple += (tgt, )
 
   return output_tuple
 
-def serialize_to_lmdb(dataset,
-                      hparams,
+def serialize_to_lmdb(hparams,
+                      dataset,
                       lmdb_path):
   if os.path.isfile(lmdb_path):
     print("lmdb file ({}) exists!".format(lmdb_path))
   else:
     df = DataFromList(dataset, shuffle=False)
-    df = MapData(df, lambda data: map_func(data, hparams))
+    df = MapData(df, lambda data: map_func(hparams, data))
     print("Creating lmdb cache...")
     LMDBSerializer.save(df, lmdb_path)
 
 
-def get_iterator(dataset,
-                 hparams,
+def get_iterator(hparams,
+                 dataset,
                  lmdb_path,
                  shuffle=True,
                  drop_remainder=True,
                  nr_proc=4):
   
-  serialize_to_lmdb(dataset, hparams, lmdb_path)
+  serialize_to_lmdb(hparams, dataset, lmdb_path)
 
   batch_size = hparams.batch_size
   num_gpu = hparams.num_gpu
@@ -245,18 +277,36 @@ def get_iterator(dataset,
 
   return prefetched_df
 
-def get_infer_iterator(dataset,
-                       hparams,
-                       lmdb_path):
+def get_eval_iterator(hparams,
+                      dataset,
+                      lmdb_path,
+                      drop_remainder=True):
   
-  serialize_to_lmdb(dataset, hparams, lmdb_path)
+  serialize_to_lmdb(hparams, dataset, lmdb_path)
 
-  batch_size = hparams.infer_batch_size
+  batch_size = hparams.batch_size
   num_gpu = hparams.num_gpu
 
   df = LMDBSerializer.load(lmdb_path, shuffle=False)
 
-  batched_df = BatchData(df, batch_size=batch_size, remainder=False)
+  batched_df = BatchData(df, batch_size=batch_size, remainder=not drop_remainder)
+  splitted_df = MapData(batched_df, lambda x: [np.array_split(x[idx], num_gpu) for idx in range(len(x))])
+  prefetched_df = PrefetchDataZMQ(splitted_df, nr_proc=1, hwm=batch_size*10)
+  
+  return prefetched_df
+
+def get_infer_iterator(hparams,
+                       dataset,
+                       num_gpu,
+                       batch_size):
+
+  df = DataFromList(dataset, shuffle=False)
+  num_samples = len(df)
+  if num_samples % batch_size != 0 and num_samples % batch_size < num_gpu:
+    raise ValueError("num_samples %% batch_size < num_gpu")
+  
+  df = MapData(df, lambda data: map_func(hparams, data))
+  batched_df = BatchData(df, batch_size=batch_size, remainder=True)
   splitted_df = MapData(batched_df, lambda x: [np.array_split(x[idx], num_gpu) for idx in range(len(x))])
   prefetched_df = PrefetchDataZMQ(splitted_df, nr_proc=1, hwm=batch_size*10)
   

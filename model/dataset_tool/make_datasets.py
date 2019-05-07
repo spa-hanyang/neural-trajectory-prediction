@@ -42,17 +42,27 @@ np.random.seed(random_seed)
 tf.random.set_random_seed(random_seed)
 
 data_path = os.path.abspath('../../dataset')
-traj_path = os.path.join(data_path, 'trajectory', 'absolute')
-output_path = os.path.join(data_path, 'processed', 'pickle', 'absolute')
+traj_path = os.path.join(data_path, 'trajectory', 'non_filled', 'absolute_50')
+output_path = os.path.join(data_path, 'processed', 'pickle', 'non_filled', 'absolute_50')
 
 traj_files = os.listdir(traj_path)
 np.random.shuffle(traj_files)
 
-test_files = traj_files[:11]
-dev_files = traj_files[11:20]
-train_files = traj_files[20:]
-devtrain_files = traj_files[11:]
+v1_traj = list(filter(lambda x: "v1" in x, traj_files))
+v2_traj = list(filter(lambda x: "v2" in x, traj_files))
 
+num_v1 = len(v1_traj)
+num_v2 = len(v2_traj)
+
+test_files = v1_traj[:num_v1//5] + v2_traj[:num_v2//5]
+devtrain_files = v1_traj[num_v1//5:] + v2_traj[num_v2//5:]
+np.random.shuffle(devtrain_files)
+
+num_devtrain = len(devtrain_files)
+dev_files = devtrain_files[:num_devtrain//5]
+train_files = devtrain_files[num_devtrain//5:]
+
+traj_files.sort()
 total_set = read_trajectory(traj_files)
 test_set = read_trajectory(test_files)
 dev_set = read_trajectory(dev_files)

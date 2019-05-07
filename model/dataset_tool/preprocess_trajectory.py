@@ -16,17 +16,17 @@ from visualize_utils import *
 
 import pdb
 
-ABSOLUTE = False
+ABSOLUTE = True
 
 # Set data processing parameters
 OBSVLEN = 30 # Observation Length
-PREDLEN = 20 # Prediction label length
+PREDLEN = 50 # Prediction label length
 MINLEN = OBSVLEN + PREDLEN
 
 # Set datapath constants
-DATA_PATH = os.path.abspath("../../dataset")
+DATA_PATH = os.path.abspath('../../dataset')
 RAW_PATH = os.path.join(DATA_PATH, 'raw_data')
-PROCESSED_PATH = os.path.join(DATA_PATH, 'trajectory')
+PROCESSED_PATH = os.path.join(DATA_PATH, 'trajectory', 'non_filled')
 
 # Set random seed
 RANDOM_SEED = 114
@@ -126,7 +126,9 @@ hdl_to_vf_mats = {
     'v2': TR(203, -2.5, -150, 179.4, 0.15, -91.3, scale_factor=0.01, degrees=True)}
 
 for s_idx, s_path in enumerate(sample_paths):
-  if "2018Y02M20D09H59m22s" in s_path:
+  if "2018Y02M20D09H59m22s" in s_path and\
+     "2017Y03M17D15H51m25s" in s_path and\
+     "2017Y05M02D14H26m58s" in s_path:
     continue
      
   # Set parameters depend on the sample version.
@@ -205,7 +207,7 @@ for s_idx, s_path in enumerate(sample_paths):
       # Transforms at the end of OBSVLEN
       if offset == OBSVLEN - 1:
         ref_vf_to_tm = vf_to_tm[offset]
-        ref_vf_to_hf = TR(0, 0, 0, roll, pitch, 0)
+        # ref_vf_to_hf = TR(0, 0, 0, roll, pitch, 0)
 
       # Steer angle and wheel spped
       steer.append(ins_temp[9])
@@ -232,10 +234,15 @@ for s_idx, s_path in enumerate(sample_paths):
         
         # Transform each frame's coordinates into the horizontal frame of the reference time.
         for offset in range(MINLEN):
+          hdl_to_tm = vf_to_tm[offset].dot(hdl_to_vf)
+          ref_hdl_to_tm = ref_vf_to_tm.dot(hdl_to_vf)
+          hdl_to_refhdl = np.linalg.solve(ref_hdl_to_tm, hdl_to_tm)
+          
           temp_XYZ = XYZ[:, offset]
-          temp_XYZ_tm = vf_to_tm[offset].dot(hdl_to_vf.dot(temp_XYZ))
-          temp_XYZ_ref_vf = np.linalg.solve(ref_vf_to_tm, temp_XYZ_tm)
-          XYZ[:, offset] = ref_vf_to_hf.dot(temp_XYZ_ref_vf)
+          XYZ[:, offset] = hdl_to_refhdl.dot(temp_XYZ)
+          # temp_XYZ_tm = vf_to_tm[offset].dot(hdl_to_vf.dot(temp_XYZ))
+          # temp_XYZ_ref_vf = np.linalg.solve(ref_vf_to_tm, temp_XYZ_tm)
+          # XYZ[:, offset] = ref_vf_to_hf.dot(temp_XYZ_ref_vf)
         
         XYZ = XYZ[:3, :]
         # Replace the coordinates
@@ -252,5 +259,5 @@ for s_idx, s_path in enumerate(sample_paths):
                      "sequence_id": int(seq_id)}
       pickle_list.append(pickle_dict)
     
-  with open(os.path.join(PROCESSED_PATH, ('absolute' if ABSOLUTE else 'relative'), '{}.{}'.format(sample_version, sample_code)), 'wb') as file:
+  with open(os.path.join(PROCESSED_PATH, ('absolute_{:d}'.format(PREDLEN) if ABSOLUTE else 'relative'), '{}.{}'.format(sample_version, sample_code)), 'wb') as file:
     pkl.dump(pickle_list, file)

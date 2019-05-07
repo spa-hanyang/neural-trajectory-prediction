@@ -6,53 +6,22 @@ import collections
 import os
 import time
 import six
+from functools import reduce
+import operator
 
 import numpy as np
 import tensorflow as tf
 from tensorflow.python.ops import nccl_ops as nccl
-from functools import reduce
-import operator
 
 from .utils import misc_utils as utils
+from . import list_ops
 
 import pdb
 
 __all__ = [
-    "get_initializer", "create_train_model", "create_eval_model",
-    "create_infer_model", "compute_loss_and_predict",
-    "gradient_clip", "create_or_load_model", "load_model", "allreduce_grads"
-]
-
-def get_initializer(init_op, seed=None, init_weight=None):
-  """Create an initializer. init_weight is only for uniform."""
-  if init_op == "uniform":
-    assert init_weight
-    return tf.random_uniform_initializer(
-        -init_weight, init_weight, seed=seed)
-  elif init_op == "glorot_normal":
-    return tf.keras.initializers.glorot_normal(
-        seed=seed)
-  elif init_op == "glorot_uniform":
-    return tf.keras.initializers.glorot_uniform(
-        seed=seed)
-  else:
-    raise ValueError("Unknown init_op %s" % init_op)
-
-class TrainModel(
-    collections.namedtuple("UnifiedModel",
-                           ("graph", "model", "placeholders"))):
-  pass
-
-def create_unified_model(model_creator, hparams, scope=None):
-  unified_graph = tf.Graph()
-
-  with unified_graph.as_default(), tf.container(scope or tf.estimator.ModeKeys.TRAIN):
-    unified_model = model_creator(hparams, mode=tf.estimator.ModeKeys.TRAIN, scope=scope)
-
-  return TrainModel(
-      graph=unified_graph,
-      model=unified_model,
-      placeholders=unified_model.placeholders)
+    "create_train_model", "create_eval_model", "create_infer_model",
+    "compute_loss_and_predict", "create_or_load_model", "load_model",
+    "gradient_clip", "allreduce_tensors"]
 
 class TrainModel(
     collections.namedtuple("TrainModel",
@@ -124,20 +93,18 @@ def load_model(model, ckpt_path, session, name):
   try:
     model.restore(session, ckpt_path)
   except tf.errors.NotFoundError as e:
-    print("Can't load checkpoint")
+    utils.print_out("Can't load checkpoint")
     print_variables_in_ckpt(ckpt_path)
-    print("%s" % str(e))
+    utils.print_out("{:s}".format(str(e)))
 
-  print(
-      "  loaded %s model parameters from %s, time %.2fs" %
-      (name, ckpt_path, time.time() - start_time))
+  utils.print_out("loaded {:s} model parameters from {:s}, in {:.2f}s".format(
+      name, ckpt_path, time.time() - start_time))
   return model
 
 def create_or_load_model(model, model_dir, session, name):
   """Create translation model and initialize or load parameters in session."""
   latest_ckpt = tf.train.latest_checkpoint(model_dir)
   if latest_ckpt:
-    session.run(tf.global_variables_initializer())
     model = load_model(model, latest_ckpt, session, name)
   else:
     start_time = time.time()
@@ -148,23 +115,38 @@ def create_or_load_model(model, model_dir, session, name):
   global_step = model.global_step.eval(session=session)
   return model, global_step
 
-def compute_loss_and_predict(model, sess, dataflow, label):
+def compute_loss_and_predict(hparams, model, sess, dataflow, label):
   """Compute mean loss of the output of the model.
 
   Args:
-    model: model for compute perplexity.
+    hparams: hyperparameters
+    model: model for prediction.
     sess: tensorflow session to use.
     label: label of the dataset.
 
   Returns:
-    prediction: prediction output
-    avg_loss: the mean loss of the eval outputs.
+    regression: prediction output
+    avg_losses: the mean losses.
   """
-  total_loss = 0
+  regression_loss = 0
+  classification_loss = 0
   total_batch = 0
   
-  prediction = []
-  gt = []
+  # Get placeholders
+  placeholders = model.placeholders
+  source_ph = list(filter(lambda x: "source_placeholder" in x.name, placeholders))
+  target_ph = list(filter(lambda x: "target_placeholder" in x.name, placeholders))
+  ph_list = source_ph + target_ph
+  if hparams.stop_discriminator:
+    ph_list += list(filter(lambda x: "stop_placeholder" in x.name, placeholders))
+  
+  batch_size_ph = list(filter(lambda x: "batch_size" in x.name, placeholders))
+  ph_list += batch_size_ph
+
+  inputs = []
+  target = []
+  regression = []
+  stop = []
   
   utils.print_out("  Begin {} evaluation.".format(label))
 
@@ -172,34 +154,54 @@ def compute_loss_and_predict(model, sess, dataflow, label):
     # feed dict
     batch_sizes = [batch.shape[0] for batch in batches[0]]
     feed_dict={key:value for (key, value) in zip(
-        model.placeholders,
+        ph_list,
         reduce(operator.add, batches) + batch_sizes)}    
-    
-    # Eval step
-    output_tuple = model.eval(sess, feed_dict=feed_dict)
-    dynamic_batch_size = np.sum(output_tuple.batch_size)
-    total_loss += output_tuple.eval_loss * dynamic_batch_size
-    total_batch += dynamic_batch_size
-    prediction += [output_tuple.eval_regression]
-    gt += [np.concatenate(batches[-1], axis=0)]
-    utils.print_out("iters {:d}, loss {:.3f}".format(iters, output_tuple.eval_loss), end='\r')
-  
-  avg_loss = total_loss / total_batch
-  prediction = np.concatenate(prediction, axis=0)
-  gt = np.concatenate(gt, axis=0)
-  return prediction, gt, avg_loss
+    dynamic_batch_size = np.sum(batch_sizes)
 
-def gradient_clip(gradients, max_gradient_norm):
+    # Evaluation
+    output_tuple = model.eval(sess, feed_dict=feed_dict)
+    
+    regression_loss += output_tuple.regression_loss * dynamic_batch_size
+    total_batch += dynamic_batch_size
+    regression += [output_tuple.regression]
+    target += batches[-1]
+
+    if hparams.stop_discriminator:
+      classification_loss += output_tuple.classification_loss * dynamic_batch_size
+      inputs += batches[0]
+      stop += [output_tuple.stop]
+      utils.print_out("iters {:d}, regression loss {:.3f}, classification loss {:.3f}".format(iters, output_tuple.regression_loss, output_tuple.classification_loss), end='\r')
+    
+    else:
+      utils.print_out("iters {:d}, regression loss {:.3f}".format(iters, output_tuple.regression_loss), end='\r')
+
+  avg_regression_loss = regression_loss / total_batch
+  losses = {"regression_loss": avg_regression_loss}
+  utils.print_out("Done. avg regression loss {:.3f}".format(avg_regression_loss))
+  
+  regression = np.concatenate(regression, axis=0)
+  target = np.concatenate(target, axis=0)
+
+  if hparams.stop_discriminator:
+    avg_classification_loss = classification_loss / total_batch
+    utils.print_out("Done. avg regression loss {:.3f}, avg classification loss {:.3f}".format(avg_regression_loss, avg_classification_loss))
+    losses["classification_loss"] = avg_classification_loss
+    inputs = np.concatenate(inputs, axis=0)
+    stop = np.concatenate(stop, axis=0)
+    regression[stop, :, :] = np.tile(inputs[stop, -1:, :hparams.trajectory_dims], [1, hparams.target_length, 1])
+  
+  return regression, target, losses
+
+def gradient_clip(list_gradients, max_gradient_norm):
   """Clipping gradients of a model."""
   if max_gradient_norm is not None:
-    clipped_gradients, gradient_norm = tf.clip_by_global_norm(
-        gradients, max_gradient_norm)
+    list_clipped_gradients, list_gradient_norm = list_ops.list_clip_by_global_norm(list_gradients, max_gradient_norm)
 
   else:
-    clipped_gradients = gradients
-    gradient_norm = tf.global_norm(gradients)
+    list_clipped_gradients = list_gradients
+    list_gradient_norm = list_ops.list_global_norm(list_gradients)
 
-  return clipped_gradients, gradient_norm
+  return list_clipped_gradients, list_gradient_norm
 
 def allreduce_tensors(all_tensors, average=True):
     """
@@ -214,19 +216,20 @@ def allreduce_tensors(all_tensors, average=True):
     """
     nr_tower = len(all_tensors)
     if nr_tower == 1:
-        return all_tensors
+      return all_tensors # No need to apply nccl reduce
+    
     new_all_tensors = []  # N x K
     for tensors in zip(*all_tensors):
-        summed = nccl.all_sum(tensors)
+      summed = nccl.all_sum(tensors)
 
-        tensors_for_devices = []  # K
-        for tensor in summed:
-            with tf.device(tensor.device):
-                # tensorflow/benchmarks didn't average gradients
-                if average:
-                    tensor = tf.multiply(tensor, 1.0 / nr_tower, name='allreduce_avg')
-            tensors_for_devices.append(tensor)
-        new_all_tensors.append(tensors_for_devices)
+      tensors_for_devices = []  # K
+      for tensor in summed:
+        with tf.device(tensor.device):
+          # tensorflow/benchmarks didn't average gradients
+          if average:
+            tensor = tf.multiply(tensor, 1.0 / nr_tower, name='allreduce_avg')
+        tensors_for_devices.append(tensor)
+      new_all_tensors.append(tensors_for_devices)
 
     # transpose to K x N
     ret = list(zip(*new_all_tensors))

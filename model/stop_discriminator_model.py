@@ -9,7 +9,7 @@ import numpy as np
 import tensorflow as tf
 
 from .  import model_helper
-from .  import list_ops
+from . import list_ops
 from .  import model
 from .utils import iterator_utils
 from .utils import misc_utils as utils
@@ -18,12 +18,64 @@ import pdb
 
 __all__ = ["Model"]
 
+class TrainOutputTuple(collections.namedtuple(
+    "TrainOutputTuple", ("train_summary", "regression_loss", "classification_loss",
+                         "global_step", "grad_norm", "learning_rate"))):
+  """To allow for flexibily in returing different outputs."""
+  pass
+
+class EvalOutputTuple(collections.namedtuple(
+    "EvalOutputTuple", ("regression", "stop", "regression_loss", "classification_loss"))):
+  """To allow for flexibily in returing different outputs."""
+  pass
+
+class InferOutputTuple(collections.namedtuple(
+    "InferOutputTuple", ("regression", "stop"))):
+  """To allow for flexibily in returing different outputs."""
+  pass
+
 class Model(model.BaseModel):
-  """Simple pointnet based lidar fusion network.
+  """Sequence-to-sequence stop discriminator model.
   This class implements a single-layer lstm as trajectory encoder,
-  PointNet and MLP ans lidar feature extraction and merginging,
-  and a single-stack lstm or MLP as trajectory decoder.
+  and a single-layer lstm or MLP as trajectory decoder.
+  Projection dense layers are applied around lstm(s).
+  Stop discriminator is also aplied.
   """
+  def __init__(self,
+               hparams,
+               mode,
+               scope=None):
+    super(Model, self).__init__(hparams, mode, scope)
+
+  def _set_other_shapes(self, hparams, scope=None):
+    pass
+
+  def train(self, sess, feed_dict):
+    """Execute train graph."""
+    assert self.mode == tf.estimator.ModeKeys.TRAIN
+    output_tuple = TrainOutputTuple(train_summary=self.train_summary,
+                                    regression_loss=self.regression_loss,
+                                    classification_loss=self.classification_loss,
+                                    global_step=self.global_step,
+                                    grad_norm=self.grad_norm,
+                                    learning_rate=self.learning_rate)
+    return sess.run([self.update, output_tuple], feed_dict=feed_dict)
+  
+  def eval(self, sess, feed_dict):
+    """Execute eval graph."""
+    assert self.mode == tf.estimator.ModeKeys.EVAL
+    output_tuple = EvalOutputTuple(regression=self.regression,
+                                   stop=self.stop,
+                                   regression_loss=self.regression_loss,
+                                   classification_loss=self.classification_loss)
+    return sess.run(output_tuple, feed_dict=feed_dict)
+
+  def infer(self, sess, feed_dict):
+    assert self.mode == tf.estimator.ModeKeys.PREDICT
+    output_tuple = InferOutputTuple(regression=self.regression,
+                                    stop=self.stop)
+    return sess.run(output_tuple, feed_dict=feed_dict)
+
   def build_graph(self, hparams, scope=None):
     with tf.variable_scope("Model"):
       utils.print_out("# Creating {} graph ...".format(self.mode))
@@ -32,26 +84,25 @@ class Model(model.BaseModel):
       
       # Encoder
       list_encoder_output, list_encoder_state = self._build_encoder(hparams, is_training)
-      self.list_encoder_output = list_encoder_output
 
-      # PointNet
-      list_global_feature = self._build_pointnet(hparams, is_training)
-      self.list_global_feature = list_global_feature
-
-      # Merge Feature
-      list_merged_state = self._build_merge(hparams, list_encoder_output, list_global_feature, is_training)
-      self.list_merged_state = list_merged_state
+      # Stop discriminator
+      list_stop_score, list_classifier_result = self._build_stop_discriminator(hparams, list_encoder_output, is_training)
 
       # Decoder
-      list_regression, _ = self._build_decoder(hparams, list_merged_state, None, is_training)
+      list_regression, _ = self._build_decoder(hparams, list_encoder_output, list_encoder_state, is_training)
 
-      # Loss
+      with tf.device(tf.DeviceSpec(device_type="CPU", device_index=0)), tf.name_scope("output"):
+        # Concatenate final outputs from all devices
+        self.regression = tf.concat(list_regression, axis=0)
+        self.stop = tf.concat(list_classifier_result, axis=0)
+     
+      list_losses = None
       if self.mode != tf.estimator.ModeKeys.PREDICT:
-        list_loss = self._compute_loss(list_regression, hparams)
-      else:
-        list_loss = [tf.constant(0.0) for _ in range(self.num_gpu)]
+        # Calculate loss in train and eval phase
+        with tf.name_scope("loss"):
+          list_losses = self._compute_loss(hparams, list_regression, list_stop_score)
 
-    return list_regression, list_loss
+    return (list_regression, list_classifier_result), list_losses
 
   def _build_input_projection(self, hparams, list_input, is_training):
     reg_func = tf.contrib.list_ops.l2_regularizer(hparams.weight_decay_factor)
@@ -137,6 +188,30 @@ class Model(model.BaseModel):
         raise ValueError("Unknown encoder type {:s}.".format(hparams.encoder_type))
 
     return net, state
+
+
+  def _build_stop_discriminator(self, hparams, inputs, is_training):
+    net = inputs
+    with tf.variable_scope("stop_discriminator"):
+      for layer_idx, units in enumerate(hparams.stop_discriminator_units):
+        with tf.variable_scope("fc{}".format(layer_idx + 1)):
+          if layer_idx < len(hparams.stop_discriminator_units) - 1:
+            net = list_ops.list_dense_with_bn(net,
+                                            units=units,
+                                            is_training=is_training,
+                                            bn_decay=self.bn_decay,
+                                            seed=self.random_seed)
+          else:
+            net = list_ops.list_dense(net,
+                                    units=units,
+                                    seed=self.random_seed)
+      with tf.name_scope("squeeze"):
+        net = list_ops.list_squeeze(net)
+      with tf.name_scope("inference"):
+        with tf.name_scope("greater"):
+          result = list_ops.list_greater(net, tf.constant(0.0, tf.float32)) # sigmoid(0) == 0.5
+  
+    return net, result
 
   def _build_fc_decoder(self, hparams, list_input, is_training):
     net = list_input
@@ -249,164 +324,106 @@ class Model(model.BaseModel):
 
     return regression, final_states
 
-  def _build_input_projection(self, hparams, list_input, is_training):
-    reg_func = tf.contrib.list_ops.l2_regularizer(hparams.weight_decay_factor)
-    net = list_input
-    if hparams.input_projector_type == "fc":
-      for layer_idx, units in enumerate(hparams.fc_input_projector_units):
-        with tf.variable_scope("fc{}".format(layer_idx + 1)):
-          net = list_ops.list_dense(
-              net, units=units, activation=tf.nn.relu, seed=self.random_seed, kernel_regularizer=reg_func)
+  def _compute_loss(self, hparams, regression, stop_score):
+    """Compute optimization loss."""
+    # Weight Decay Loss
+    with tf.name_scope("weight_decay_loss"):
+      all_decay_losses = tf.losses.get_regularization_losses()
+      if len(all_decay_losses):
+        list_regs = [list(filter(lambda x: "tower_{:d}".format(gpu_idx) in x.name, all_decay_losses)) for gpu_idx in range(self.num_gpu)]
+        with tf.name_scope("add_n"):
+          list_decay_loss = list_ops.list_add_n(list_regs)
 
-    elif hparams.input_projector_type == "cnn":
-      for layer_idx, (filters, kernel_size) in enumerate(zip(hparams.cnn_input_projector_filters, hparams.cnn_input_projector_kernels)):
-        with tf.variable_scope("conv{}".format(layer_idx + 1)):
-          net = list_ops.list_conv1d_with_bn(net,
-                                           filters=filters,
-                                           kernel_size=kernel_size,
-                                           is_training=is_training,
-                                           bn_decay=self.bn_decay,
-                                           padding='same',
-                                           seed=self.random_seed)
-    else:
-      raise ValueError("Unknown projector {:s}.".format(hparams.input_projector_type))
+      else:
+        list_decay_loss = list_ops.list_zeros_like([np.float32(0.0) for _ in range(self.num_gpu)])
+      self.decay_loss = list_decay_loss[0]
     
-    return net
-  
-  def _input_transform_net(self, hparams, list_pointcloud, is_training, bn_decay=None, K=3):
-    with tf.name_scope("expand_dims"):
-      input_images = list_ops.list_expand_dims(list_pointcloud, -1)
-    
-    with tf.variable_scope("tconv1"):
-      net = list_ops.list_conv2d_with_bn(input_images, 64, (1, 3), is_training, bn_decay, seed=self.random_seed)
-
-    with tf.variable_scope("tconv2"):
-      net = list_ops.list_conv2d_with_bn(net, 128, (1, 1), is_training, bn_decay, seed=self.random_seed)
-
-    with tf.variable_scope("tconv3"):
-      net = list_ops.list_conv2d_with_bn(net, 1024, (1, 1), is_training, bn_decay, seed=self.random_seed)
-    
-    with tf.name_scope("tmaxpool"):
-      net = list_ops.list_maxpool2d(net, (hparams.num_point, 1))
-    
-    with tf.name_scope("flatten"):
-      net = list_ops.list_flatten(net)
-
-    with tf.variable_scope("tfc1"):
-      net = list_ops.list_dense_with_bn(net, 512, is_training, bn_decay, seed=self.random_seed)
-    
-    with tf.variable_scope("tfc2"):
-      net = list_ops.list_dense_with_bn(net, 256, is_training, bn_decay, seed=self.random_seed)
-
-    with tf.variable_scope("transform_XYZ"):
-      transform = list_ops.list_dense2(net, K*K,
-                                     kernel_initializer=tf.initializers.zeros,
-                                     bias_initializer=tf.initializers.constant(np.eye(K).flatten()))
-      transform = list_ops.list_reshape(transform, (-1, K, K), new_scope=False)
-    
-    return transform
-      
-  def _feature_transform_net(self, hparams, list_inputs, is_training, bn_decay=None, K=64):
-    with tf.variable_scope("tconv1"):
-      net = list_ops.list_conv2d_with_bn(list_inputs, 64, (1, 1), is_training, bn_decay, seed=self.random_seed)
-
-    with tf.variable_scope("tconv2"):
-      net = list_ops.list_conv2d_with_bn(net, 128, (1, 1), is_training, bn_decay, seed=self.random_seed)
-
-    with tf.variable_scope("tconv3"):
-      net = list_ops.list_conv2d_with_bn(net, 1024, (1, 1), is_training, bn_decay, seed=self.random_seed)
-    
-    with tf.name_scope("tmaxpool"):
-      net = list_ops.list_maxpool2d(net, (hparams.num_point, 1))
-    
-    with tf.name_scope("flatten"):
-      net = list_ops.list_flatten(net)
-    
-    with tf.variable_scope("tfc1"):
-      net = list_ops.list_dense_with_bn(net, 512, is_training, bn_decay, seed=self.random_seed)
-    
-    with tf.variable_scope("tfc2"):
-      net = list_ops.list_dense_with_bn(net, 256, is_training, bn_decay, seed=self.random_seed)
-      
-    with tf.variable_scope("transform_XYZ"):
-      transform = list_ops.list_dense2(net, K*K,
-                                     kernel_initializer=tf.initializers.zeros,
-                                     bias_initializer=tf.initializers.constant(np.eye(K).flatten()))
-      transform = list_ops.list_reshape(transform, (-1, K, K), new_scope=False)
-    
-    return transform
-
-  def _build_pointnet(self, hparams, is_training):
-    """Build pointnet from raw pointcloud."""
-    with tf.variable_scope("PointNet"):      
-      # pointnet input
-      with tf.name_scope("pointnet_placeholder"):
-        input_phs = list_ops.list_placeholder(self.num_gpu, (None, hparams.num_point, 3), tf.int16)
-      for ph in input_phs:
+    # Vehicle stop classification loss
+    with tf.name_scope("stop_placeholder"):
+      stop_phs = list_ops.list_placeholder(self.num_gpu, (None), tf.float32)
+      for ph in stop_phs:
         tf.add_to_collection('placeholder', ph)
-      
+    with tf.name_scope("classifier_loss"):
+      with tf.name_scope("sigmoid_cross_entropy"):
+        list_classifier_loss = list_ops.list_sigmoid_cross_entropy(stop_phs, stop_score)
+      with tf.name_scope("reduce_sum"):
+        list_classifier_loss = list_ops.list_reduce_sum(list_classifier_loss)
       with tf.name_scope("cast"):
-        list_pointcloud = list_ops.list_cast(input_phs, tf.float32)
+        batch_size_float = list_ops.list_cast(self.batch_size, tf.float32)
+      with tf.name_scope("division"):
+        list_classifier_loss = list_ops.list_divide(list_classifier_loss, batch_size_float)
+      with tf.device(tf.DeviceSpec(device_type="CPU", device_index=0)), tf.name_scope("reduce_mean"):
+        self.classifier_loss = tf.reduce_mean(list_classifier_loss)
 
-      with tf.variable_scope('transform_net'):
-        list_transform = self._input_transform_net(hparams, list_pointcloud, is_training, self.bn_decay, K=3)
+    # Regression Loss
+    with tf.name_scope("regression_loss"):
+      with tf.name_scope("target_placeholder"):
+        target_phs = list_ops.list_placeholder(self.num_gpu, (None, self.target_length, self.target_dims), tf.float32)
+      for ph in target_phs:
+        tf.add_to_collection('placeholder', ph)
 
-      with tf.name_scope('input_transform'):
-        list_pointcloud_transformed = list_ops.list_matmul(list_pointcloud, list_transform)# ([Batch, num_point, 3]).dot([Batch, 3, 3])
-        list_inputs = list_ops.list_expand_dims(list_pointcloud_transformed, -1, new_scope=False)
+      with tf.name_scope("count_non_stopped"):
+        with tf.name_scope("reduce_sum"):
+          list_stopped = list_ops.list_reduce_sum(stop_phs)
+        with tf.name_scope("subtract"):
+          list_non_stopped = list_ops.list_subtract(self.batch_size, list_stopped)
+
+      with tf.name_scope("filter_stopped_objects"):
+        list_ops.list_boolean_mask(regression_loss, classifier_result, axis=0)
+        list_ops.list_boolean_mask(regression_loss, classifier_result, axis=0)
+
+      loss_type = hparams.loss
       
-      with tf.variable_scope("conv1"):
-        net = list_ops.list_conv2d_with_bn(list_inputs, 64, (1, 3), is_training, self.bn_decay, seed=self.random_seed)
+      with tf.name_scope("{:s}_loss".format(loss_type)):
+        if loss_type == "l2":
+          loss = list_ops.list_l2(target_phs, res)
+        elif loss_type == "weighted_smooth_l1":
+          loss = list_ops.list_weighted_smooth_l1(target_phs, res)
+        else:
+          raise ValueError("Unknown loss type {:s}".format(loss_type))
+
+      with tf.name_scope("reduce_sum"):
+        loss = list_ops.list_reduce_sum(loss)
+      with tf.name_scope("cast"):
+        batch_size_float = list_ops.list_cast(self.batch_size, tf.float32)
+      with tf.name_scope("division"):
+        list_regression_loss = list_ops.list_divide(loss, batch_size_float)
+      with tf.device(tf.DeviceSpec(device_type="CPU", device_index=0)), tf.name_scope("reduce_mean"):
+        self.regression_loss = tf.reduce_mean(list_regression_loss)
+
+
+    # Total Loss
+    with tf.name_scope("total_loss"):
+      list_total_loss = [*zip(list_regression_loss, list_decay_loss)]
+      with tf.name_scope("add_n"):
+        list_total_loss = list_ops.list_add_n(list_total_loss)
+      with tf.device(tf.DeviceSpec(device_type="CPU", device_index=0)), tf.name_scope("reduce_mean"):
+        self.total_loss = tf.reduce_mean(list_total_loss)
+
+    loss_type = hparams.loss
+    with tf.variable_scope(loss_type + "_loss"):
+      with tf.name_scope("target_placeholder"):
+        target_phs = list_ops.list_placeholder(self.num_gpu, (None, self.target_length, self.target_dims), tf.float32)
+      for ph in target_phs:
+        tf.add_to_collection('placeholder', ph)
+
+      if loss_type == "l2":
+        regression_loss = list_ops.list_l2(target_phs, regression, self.batch_size, normalize=False)
+      elif loss_type == "weighted_smooth_l1":
+        regression_loss = list_ops.list_weighted_smooth_l1(target_phs, regression, self.batch_size, normalize=False)
+      else:
+        assert False
       
-      with tf.variable_scope("conv2"):
-        net = list_ops.list_conv2d_with_bn(net, 64, (1, 1), is_training, self.bn_decay, seed=self.random_seed)
+      with tf.name_scope("filter_stopped_objects"):
+        with tf.name_scope("boolean_mask"):
+          filtered_regression_loss = 
+        with tf.name_scope("where"):
+          filtered_regression_loss = list_ops.list_where(lambda x: x > 0, regression_loss, tf.constant(0.0, tf.float32))
+        
 
-      with tf.variable_scope('transform_net2'):
-        list_transform = self._feature_transform_net(hparams, net, is_training, self.bn_decay, K=64)
-        with tf.name_scope('orthogonal_regularizer'):
-          for gpu_idx, transforms in enumerate(list_transform):
-            with tf.device(tf.DeviceSpec(device_type="GPU", device_index=gpu_idx)), tf.name_scope("tower_{}".format(gpu_idx)):
-              mat_diff = tf.matmul(transforms, tf.transpose(transforms, perm=[0, 2, 1]))
-              mat_diff -= tf.constant(np.eye(64), dtype=tf.float32)
-              orthogonal_loss = tf.nn.l2_loss(mat_diff)
-              tf.add_to_collection("orthogonal_loss", orthogonal_loss)
-          
-      with tf.name_scope('feature_transform'):
-        net = list_ops.list_squeeze(net, -2)
-        point_feat = list_ops.list_matmul(net, list_transform, new_scope=False) # ([Batch, num_point, 64]).dot([Batch, 64, 64])
-        point_feat = list_ops.list_expand_dims(point_feat, -2, new_scope=False)
+    with tf.variable_scope("loss"):
+      self.regression_loss = regression_loss
+      self.classifier_loss = classifier_loss
+      loss_list = list_ops.list_add(classifier_loss, regression_loss)
 
-      with tf.variable_scope("conv3"):
-        net = list_ops.list_conv2d_with_bn(point_feat, 64, (1, 1), is_training, self.bn_decay, seed=self.random_seed)
-
-      with tf.variable_scope("conv4"):
-        net = list_ops.list_conv2d_with_bn(net, 128, (1, 1), is_training, self.bn_decay, seed=self.random_seed)
-
-      with tf.variable_scope("conv5"):
-        net = list_ops.list_conv2d_with_bn(net, 1024, (1, 1), is_training, self.bn_decay, seed=self.random_seed)
-
-      with tf.name_scope("maxpool"):
-        net = list_ops.list_maxpool2d(net, (hparams.num_point, 1))
-        list_global_feat = list_ops.list_flatten(net, new_scope=False)
-    
-    return list_global_feat
-
-  def _build_merge(self, hparams, final_state, global_feature, is_training):
-    with tf.variable_scope('feature_merge'):
-      with tf.name_scope("concat"):
-        net = list_ops.list_concat(final_state, global_feature, axis=-1)
-      
-      with tf.variable_scope('fc1'):
-        net = list_ops.list_dense_with_bn(net, 512, is_training, self.bn_decay, seed=self.random_seed)
-
-    return net
-  
-  def _get_histogram_summary(self):
-    with tf.device(tf.DeviceSpec(device_type="CPU", device_index=0)), tf.name_scope("activation_histogram"):
-      rnn_state_stack = tf.stack(self.list_encoder_output, axis=0)
-      feature_stack = tf.stack(self.list_global_feature, axis=0)
-      merged_state_stack = tf.stack(self.list_merged_state, axis=0)
-      
-      return [tf.summary.merge([tf.summary.histogram("rnn_state", rnn_state_stack),
-                               tf.summary.histogram("global_feature", feature_stack),
-                               tf.summary.histogram("merged_feature", merged_state_stack)])]
+    return loss_list
